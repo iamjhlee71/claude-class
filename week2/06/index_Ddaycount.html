@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>D-day 카운터 - 2주차</title>
+  <!-- Tailwind CSS (스타일링을 위한 라이브러리) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 본체 -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <!-- React를 화면(DOM)에 그려주는 라이브러리 -->
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- JSX 문법을 브라우저가 이해하도록 변환해주는 도구 -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gradient-to-br from-sky-100 to-indigo-100 min-h-screen flex items-center justify-center p-4">
+  <!-- React 앱이 그려질 자리 -->
+  <div id="root"></div>
+
+  <!-- type="text/babel" 을 적어야 JSX 문법을 사용할 수 있어요 -->
+  <script type="text/babel">
+
+    // React에서 자주 쓰는 기능(Hook)을 꺼내옵니다.
+    const { useState, useEffect } = React;
+
+    // localStorage에 데이터를 저장할 때 사용할 키 이름이에요.
+    const STORAGE_KEY = "dday-counter-events";
+
+    // ========================================
+    // 🗓️ 날짜 계산에 쓰는 도우미 함수들
+    // ========================================
+
+    // 요일 번호(0~6)를 한국어 요일 이름으로 바꿔줍니다. (0 = 일요일)
+    const WEEKDAYS = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+
+    // 두 날짜 사이의 일수 차이를 구해요. (시간 영향을 없애기 위해 자정 기준으로 계산)
+    function diffInDays(from, to) {
+      const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+      const b = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+      const msPerDay = 1000 * 60 * 60 * 24;
+      return Math.round((b - a) / msPerDay);
+    }
+
+    // "YYYY-MM-DD" 문자열을 Date 객체로 안전하게 바꿔줍니다. (시간대 문제 방지)
+    function parseDate(str) {
+      const [y, m, d] = str.split("-").map((n) => parseInt(n, 10));
+      // 숫자가 아니면 유효하지 않은 날짜로 판단
+      if (isNaN(y) || isNaN(m) || isNaN(d)) return null;
+      const date = new Date(y, m - 1, d);
+      // 입력값과 실제 날짜가 다르면(예: 2월 30일) 존재하지 않는 날짜
+      if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) {
+        return null;
+      }
+      return date;
+    }
+
+    // "YYYY-MM-DD" 를 "2026년 6월 13일 (금요일)" 형태로 예쁘게 바꿔줍니다.
+    function formatDate(str) {
+      const date = parseDate(str);
+      if (!date) return str;
+      const weekday = WEEKDAYS[date.getDay()];
+      return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 (${weekday})`;
+    }
+
+    // ========================================
+    // 🧮 D-day 계산 핵심 함수
+    // ========================================
+    // 목표 날짜 문자열과 오늘 날짜를 받아 D-day 정보를 한 번에 계산합니다.
+    function calculateDday(targetStr, today) {
+      const target = parseDate(targetStr);
+      if (!target) return null;
+
+      // 오늘 → 목표 날짜까지 남은 일수 (양수면 미래, 음수면 과거, 0이면 오늘)
+      const diff = diffInDays(today, target);
+
+      let label;     // 화면에 보여줄 D-day 텍스트 (예: D-30, D-DAY, D+10)
+      let status;    // 상태 구분: "future"(미래) / "today"(오늘) / "past"(과거)
+
+      if (diff > 0) {
+        label = `D-${diff}`;
+        status = "future";
+      } else if (diff === 0) {
+        label = "D-DAY";
+        status = "today";
+      } else {
+        label = `D+${Math.abs(diff)}`;
+        status = "past";
+      }
+
+      return { diff, label, status };
+    }
+
+    // ========================================
+    // 🏷️ D-day 배지 컴포넌트 (상태별 색상 강조)
+    // ========================================
+    function DdayBadge({ status, label }) {
+      // 상태에 따라 다른 색상 스타일을 적용해요.
+      const styleMap = {
+        // 오늘(D-DAY): 빨강/주황 그라데이션으로 강하게 강조
+        today: "bg-gradient-to-r from-red-500 to-orange-500 text-white shadow-md",
+        // 미래: 파랑 계열
+        future: "bg-indigo-100 text-indigo-700",
+        // 과거: 회색 계열
+        past: "bg-gray-200 text-gray-500",
+      };
+
+      return (
+        <span className={`inline-block px-4 py-1.5 rounded-full text-lg font-extrabold ${styleMap[status]}`}>
+          {label}
+        </span>
+      );
+    }
+
+    // ========================================
+    // 📦 D-day 카드 한 칸 컴포넌트
+    // ========================================
+    function DdayCard({ event, today, onDelete }) {
+      const info = calculateDday(event.date, today);
+      if (!info) return null;
+
+      // 오늘(D-DAY)인 카드는 테두리/배경을 더 눈에 띄게 강조합니다.
+      const cardAccent =
+        info.status === "today"
+          ? "ring-2 ring-orange-300 bg-orange-50"
+          : "ring-1 ring-gray-100 bg-white";
+
+      return (
+        <div className={`rounded-2xl shadow p-5 flex items-center justify-between gap-4 ${cardAccent}`}>
+          {/* ---------- 왼쪽: 이벤트 정보 ---------- */}
+          <div className="min-w-0">
+            <p className="text-base font-bold text-gray-800 truncate">{event.name}</p>
+            <p className="text-sm text-gray-500 mt-1">{formatDate(event.date)}</p>
+            <div className="mt-3">
+              <DdayBadge status={info.status} label={info.label} />
+            </div>
+          </div>
+
+          {/* ---------- 오른쪽: 삭제 버튼 ---------- */}
+          <button
+            onClick={() => onDelete(event.id)}
+            aria-label="삭제"
+            className="shrink-0 w-9 h-9 flex items-center justify-center rounded-full
+                       bg-gray-100 hover:bg-red-100 text-gray-400 hover:text-red-500 transition">
+            ✕
+          </button>
+        </div>
+      );
+    }
+
+    // ========================================
+    // ➕ D-day 추가 입력 폼 컴포넌트
+    // ========================================
+    function DdayForm({ onAdd }) {
+      const [name, setName] = useState("");   // 이벤트 이름
+      const [date, setDate] = useState("");   // 목표 날짜 (YYYY-MM-DD)
+      const [error, setError] = useState(""); // 오류 메시지
+
+      // "추가하기" 버튼을 눌렀을 때 실행됩니다.
+      function handleAdd() {
+        // --- 유효성 검사: 이벤트 이름 빈 값 ---
+        if (name.trim() === "") {
+          setError("이벤트 이름을 입력해 주세요.");
+          return;
+        }
+        // --- 유효성 검사: 날짜 빈 값 ---
+        if (date.trim() === "") {
+          setError("목표 날짜를 선택해 주세요.");
+          return;
+        }
+        // --- 유효성 검사: 존재하지 않는 날짜 ---
+        if (!parseDate(date)) {
+          setError("올바른 날짜가 아니에요. 다시 확인해 주세요.");
+          return;
+        }
+
+        // --- 모든 검사 통과 → 새 항목 추가 ---
+        onAdd({
+          id: Date.now(),         // 고유 식별자 (현재 시각 사용)
+          name: name.trim(),
+          date: date,
+        });
+
+        // 입력값 초기화
+        setName("");
+        setDate("");
+        setError("");
+      }
+
+      return (
+        <div className="bg-white rounded-2xl shadow-lg p-6">
+          {/* ---------- 이벤트 이름 입력 ---------- */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">이벤트 이름</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              placeholder="예: 시험, 여행, 기념일"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg
+                         focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </div>
+
+          {/* ---------- 목표 날짜 입력 ---------- */}
+          <div className="mt-4">
+            <label className="block text-sm font-semibold text-gray-700 mb-1">목표 날짜</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg
+                         focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </div>
+
+          {/* ---------- 추가 버튼 ---------- */}
+          <button
+            onClick={handleAdd}
+            className="w-full mt-5 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition">
+            추가하기
+          </button>
+
+          {/* ---------- 오류 메시지 (조건부 렌더링) ---------- */}
+          {error && (
+            <p className="mt-4 text-center text-sm text-red-500 bg-red-50 rounded-lg py-2 px-3">
+              ⚠️ {error}
+            </p>
+          )}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 📋 D-day 목록 컴포넌트
+    // ========================================
+    function DdayList({ events, today, onDelete }) {
+      // 목록이 비어 있으면 안내 문구를 보여줍니다.
+      if (events.length === 0) {
+        return (
+          <div className="bg-white rounded-2xl shadow p-8 mt-6 text-center text-gray-400">
+            <p className="text-3xl mb-2">🗓️</p>
+            <p className="text-sm">아직 등록된 D-day가 없어요.<br />위에서 첫 D-day를 추가해 보세요!</p>
+          </div>
+        );
+      }
+
+      // 가까운 날짜순(D-day 임박 순)으로 정렬합니다.
+      // diff 값이 작을수록(=날짜가 가까울수록) 위로 오게 정렬해요.
+      const sorted = [...events].sort((a, b) => {
+        const da = calculateDday(a.date, today);
+        const db = calculateDday(b.date, today);
+        return da.diff - db.diff;
+      });
+
+      return (
+        <div className="space-y-3 mt-6">
+          {sorted.map((event) => (
+            <DdayCard key={event.id} event={event} today={today} onDelete={onDelete} />
+          ))}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 전체 앱 (여러 컴포넌트를 합치기)
+    // ========================================
+    function App() {
+      // 오늘 날짜는 앱이 켜질 때 한 번 정해둡니다.
+      const today = new Date();
+
+      // 등록된 D-day 목록 상태. 처음에 localStorage에서 불러옵니다.
+      const [events, setEvents] = useState(() => {
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          return saved ? JSON.parse(saved) : [];
+        } catch (e) {
+          // 저장된 값이 깨졌을 경우 빈 목록으로 시작
+          return [];
+        }
+      });
+
+      // events가 바뀔 때마다 localStorage에 자동 저장합니다.
+      useEffect(() => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+      }, [events]);
+
+      // 새 D-day 항목 추가
+      function handleAdd(newEvent) {
+        setEvents((prev) => [...prev, newEvent]);
+      }
+
+      // 특정 항목 삭제 (id로 구분)
+      function handleDelete(id) {
+        setEvents((prev) => prev.filter((e) => e.id !== id));
+      }
+
+      return (
+        <div className="w-full max-w-md">
+          <h1 className="text-3xl font-extrabold text-center text-gray-800 mb-2">
+            D-day 카운터
+          </h1>
+          <p className="text-center text-gray-500 mb-8">2주차 · 중요한 날까지 며칠 남았나요?</p>
+
+          {/* 입력 폼 */}
+          <DdayForm onAdd={handleAdd} />
+
+          {/* D-day 목록 */}
+          <DdayList events={events} today={today} onDelete={handleDelete} />
+
+          <p className="text-center text-xs text-gray-400 mt-6">
+            ※ 오늘 날짜를 기준으로 자동 계산되며, 목록은 자동으로 저장됩니다.
+          </p>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 화면에 App 그리기 (React 18 방식)
+    // ========================================
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+
+  </script>
+</body>
+</html>

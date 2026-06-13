@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>React 기초 배우기 - 2주차</title>
+  <!-- Tailwind CSS (스타일링을 위한 라이브러리) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 본체 -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <!-- React를 화면(DOM)에 그려주는 라이브러리 -->
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- JSX 문법을 브라우저가 이해하도록 변환해주는 도구 -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gradient-to-br from-sky-100 to-indigo-100 min-h-screen flex items-center justify-center p-4">
+  <!-- React 앱이 그려질 자리 -->
+  <div id="root"></div>
+
+  <!-- type="text/babel" 을 적어야 JSX 문법을 사용할 수 있어요 -->
+  <script type="text/babel">
+
+    // React에서 자주 쓰는 기능(Hook)을 꺼내옵니다.
+    const { useState } = React;
+
+    // ========================================
+    // 🔢 카운터 컴포넌트 (state = 상태 배우기)
+    // ========================================
+    function Counter() {
+      // useState: 화면에서 바뀌는 값(상태)을 만들 때 사용해요.
+      // count = 현재 값,  setCount = 값을 바꾸는 함수
+      // 0은 처음 시작 값(초기값) 입니다.
+      const [count, setCount] = useState(0);
+
+      return (
+        <div className="bg-white rounded-2xl shadow p-6 mb-6">
+          <h2 className="text-xl font-bold text-gray-800 mb-4">🔢 숫자 카운터</h2>
+
+          {/* 중괄호 {} 안에 자바스크립트 값을 넣을 수 있어요 */}
+          <p className="text-center text-5xl font-extrabold text-indigo-600 mb-5">
+            {count}
+          </p>
+
+          {/* 버튼을 누르면(onClick = 이벤트 핸들러) 상태가 바뀝니다 */}
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={() => setCount(count - 1)}
+              className="px-5 py-2 bg-rose-500 hover:bg-rose-600 text-white font-semibold rounded-lg transition">
+              감소 −
+            </button>
+            <button
+              onClick={() => setCount(0)}
+              className="px-5 py-2 bg-gray-400 hover:bg-gray-500 text-white font-semibold rounded-lg transition">
+              초기화
+            </button>
+            <button
+              onClick={() => setCount(count + 1)}
+              className="px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold rounded-lg transition">
+              증가 +
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 👋 인사 컴포넌트 (controlled input 배우기)
+    // ========================================
+    function Greeting() {
+      // 입력창에 적은 이름을 상태로 저장합니다. (처음엔 빈 문자열 "")
+      const [name, setName] = useState("");
+
+      return (
+        <div className="bg-white rounded-2xl shadow p-6">
+          <h2 className="text-xl font-bold text-gray-800 mb-4">👋 이름 인사하기</h2>
+
+          {/* value 와 onChange 로 입력값을 React가 관리해요 (제어 컴포넌트) */}
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="이름을 입력해 보세요"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4
+                       focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          />
+
+          {/* 이름이 있으면 인사, 없으면 안내 문구를 보여줍니다 (조건부 렌더링) */}
+          <p className="text-center text-lg text-gray-700">
+            {name
+              ? <span className="font-bold text-indigo-600">안녕하세요, {name}님! 🎉</span>
+              : "위에 이름을 입력하면 인사를 해드려요."}
+          </p>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 전체 앱 (여러 컴포넌트를 합치기)
+    // ========================================
+    function App() {
+      return (
+        <div className="w-full max-w-md">
+          <h1 className="text-3xl font-extrabold text-center text-gray-800 mb-2">
+            React 기초 배우기
+          </h1>
+          <p className="text-center text-gray-500 mb-8">2주차 · 상태(state)와 이벤트 연습</p>
+
+          {/* 컴포넌트를 태그처럼 사용할 수 있어요 */}
+          <Counter />
+          <Greeting />
+        </div>
+      );
+    }
+
+    // ========================================
+    // 화면에 App 그리기 (React 18 방식)
+    // ========================================
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+
+  </script>
+</body>
+</html>

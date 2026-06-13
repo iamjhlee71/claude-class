@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>만 나이 계산기 - 2주차</title>
+  <!-- Tailwind CSS (스타일링을 위한 라이브러리) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 본체 -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <!-- React를 화면(DOM)에 그려주는 라이브러리 -->
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- JSX 문법을 브라우저가 이해하도록 변환해주는 도구 -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gradient-to-br from-sky-100 to-indigo-100 min-h-screen flex items-center justify-center p-4">
+  <!-- React 앱이 그려질 자리 -->
+  <div id="root"></div>
+
+  <!-- type="text/babel" 을 적어야 JSX 문법을 사용할 수 있어요 -->
+  <script type="text/babel">
+
+    // React에서 자주 쓰는 기능(Hook)을 꺼내옵니다.
+    const { useState } = React;
+
+    // ========================================
+    // 🗓️ 날짜 계산에 쓰는 도우미 함수들
+    // ========================================
+
+    // 요일 번호(0~6)를 한국어 요일 이름으로 바꿔줍니다. (0 = 일요일)
+    const WEEKDAYS = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+
+    // 특정 연/월의 마지막 날짜(28~31)를 구해요. (윤년/달마다 다른 일수 처리)
+    function getDaysInMonth(year, month) {
+      // month는 1~12로 받아서 Date에 넘길 때 0이 다음 달의 0일 = 이번 달 마지막 날
+      return new Date(year, month, 0).getDate();
+    }
+
+    // 입력된 연/월/일이 실제로 존재하는 날짜인지 검사합니다.
+    // 예) 2월 30일, 4월 31일 같은 날짜를 걸러냅니다.
+    function isValidDate(year, month, day) {
+      if (month < 1 || month > 12) return false;
+      const lastDay = getDaysInMonth(year, month);
+      if (day < 1 || day > lastDay) return false;
+      return true;
+    }
+
+    // 두 날짜 사이의 일수 차이를 구해요. (시간 영향을 없애기 위해 자정 기준으로 계산)
+    function diffInDays(from, to) {
+      const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+      const b = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+      const msPerDay = 1000 * 60 * 60 * 24;
+      return Math.round((b - a) / msPerDay);
+    }
+
+    // ========================================
+    // 🧮 만 나이 계산 핵심 함수
+    // ========================================
+    // 생년월일과 오늘 날짜를 받아서 결과 정보를 한 번에 계산해 돌려줍니다.
+    function calculateAge(year, month, day, today) {
+      const birth = new Date(year, month - 1, day); // 월은 0부터 시작하므로 -1
+
+      // --- 만 나이 = 올해 - 출생연도, 단 생일이 아직 안 지났으면 -1 ---
+      let age = today.getFullYear() - year;
+      const monthDiff = today.getMonth() - (month - 1);
+      const dayDiff = today.getDate() - day;
+      // 이번 해의 생일이 아직 안 지났으면 한 살 빼기
+      if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
+        age -= 1;
+      }
+
+      // --- 태어난 지 총 며칠 살았는지 (D+) ---
+      const totalDays = diffInDays(birth, today);
+
+      // --- 다음 생일까지 남은 일수 ---
+      // 올해의 생일 날짜를 먼저 만들고, 이미 지났으면 내년으로 넘깁니다.
+      let nextBirthday = new Date(today.getFullYear(), month - 1, day);
+      const nextBirthdayBase = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      if (nextBirthday < nextBirthdayBase) {
+        nextBirthday = new Date(today.getFullYear() + 1, month - 1, day);
+      }
+      const daysUntilBirthday = diffInDays(today, nextBirthday);
+
+      // --- 출생 요일 ---
+      const birthWeekday = WEEKDAYS[birth.getDay()];
+
+      // 오늘이 생일인지 여부 (남은 일수가 0이면 오늘이 생일!)
+      const isBirthdayToday = daysUntilBirthday === 0;
+
+      return { age, totalDays, daysUntilBirthday, birthWeekday, isBirthdayToday };
+    }
+
+    // ========================================
+    // 📦 결과 항목 한 칸 컴포넌트 (작은 정보 카드)
+    // ========================================
+    function InfoBox({ icon, label, value, accent }) {
+      return (
+        <div className={`rounded-xl p-4 text-center ring-1 ${accent}`}>
+          <div className="text-xl mb-1">{icon}</div>
+          <p className="text-xs text-gray-500 mb-1">{label}</p>
+          <p className="text-lg font-bold text-gray-800">{value}</p>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🧮 만 나이 계산기 컴포넌트 (메인 기능)
+    // ========================================
+    function AgeCalculator() {
+      const [birthDate, setBirthDate] = useState(""); // 생년월일 (YYYY-MM-DD 문자열)
+      const [result, setResult] = useState(null);      // 계산 결과 객체
+      const [error, setError] = useState("");           // 오류 메시지
+
+      // "계산하기" 버튼을 눌렀을 때 실행되는 함수
+      function handleCalculate() {
+        // --- 입력값 유효성 검사: 빈 값 ---
+        if (birthDate.trim() === "") {
+          setError("생년월일을 입력해 주세요.");
+          setResult(null);
+          return;
+        }
+
+        // 문자열(YYYY-MM-DD)을 연/월/일 숫자로 나눕니다.
+        const [yStr, mStr, dStr] = birthDate.split("-");
+        const year = parseInt(yStr, 10);
+        const month = parseInt(mStr, 10);
+        const day = parseInt(dStr, 10);
+
+        // --- 유효성 검사: 숫자가 아니거나 비정상 값 ---
+        if (isNaN(year) || isNaN(month) || isNaN(day)) {
+          setError("올바른 날짜 형식이 아니에요.");
+          setResult(null);
+          return;
+        }
+
+        // --- 유효성 검사: 존재하지 않는 날짜 (예: 2월 30일) ---
+        if (!isValidDate(year, month, day)) {
+          setError("존재하지 않는 날짜예요. 다시 확인해 주세요.");
+          setResult(null);
+          return;
+        }
+
+        // --- 유효성 검사: 너무 옛날 (1900년 이전) ---
+        if (year < 1900) {
+          setError("1900년 이후의 날짜를 입력해 주세요.");
+          setResult(null);
+          return;
+        }
+
+        // --- 유효성 검사: 미래 날짜 ---
+        const today = new Date();
+        const birth = new Date(year, month - 1, day);
+        const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        if (birth > todayMidnight) {
+          setError("미래의 날짜는 입력할 수 없어요.");
+          setResult(null);
+          return;
+        }
+
+        // --- 모든 검사를 통과했으면 계산 실행 ---
+        setError("");
+        setResult(calculateAge(year, month, day, today));
+      }
+
+      // "초기화" 버튼
+      function handleReset() {
+        setBirthDate("");
+        setResult(null);
+        setError("");
+      }
+
+      return (
+        <div className="bg-white rounded-2xl shadow-lg p-6">
+          {/* ---------- 입력 영역 ---------- */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">생년월일</label>
+            <input
+              type="date"
+              value={birthDate}
+              onChange={(e) => setBirthDate(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCalculate()}
+              max={new Date().toISOString().split("T")[0]} /* 미래 날짜 선택 막기 */
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg
+                         focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+          </div>
+
+          {/* ---------- 버튼 영역 ---------- */}
+          <div className="flex gap-3 mt-5">
+            <button
+              onClick={handleCalculate}
+              className="flex-1 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition">
+              계산하기
+            </button>
+            <button
+              onClick={handleReset}
+              className="px-5 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold rounded-lg transition">
+              초기화
+            </button>
+          </div>
+
+          {/* ---------- 오류 메시지 (조건부 렌더링) ---------- */}
+          {error && (
+            <p className="mt-4 text-center text-sm text-red-500 bg-red-50 rounded-lg py-2 px-3">
+              ⚠️ {error}
+            </p>
+          )}
+
+          {/* ---------- 결과 영역 (결과가 있을 때만 보임) ---------- */}
+          {result !== null && (
+            <div className="mt-6 space-y-4">
+              {/* 메인 결과: 만 나이 */}
+              <div className="rounded-2xl p-5 text-center ring-1 bg-indigo-50 ring-indigo-200">
+                <p className="text-sm text-gray-500 mb-1">나의 만 나이</p>
+                <p className="text-5xl font-extrabold mb-1 text-indigo-600">
+                  만 {result.age}세
+                </p>
+                {/* 오늘이 생일이면 축하 메시지 표시 */}
+                {result.isBirthdayToday && (
+                  <span className="inline-block mt-2 px-4 py-1 rounded-full bg-pink-500 text-white text-sm font-bold">
+                    🎉 오늘이 생일이에요!
+                  </span>
+                )}
+              </div>
+
+              {/* 추가 정보: 작은 카드 2개씩 배치 */}
+              <div className="grid grid-cols-2 gap-3">
+                <InfoBox
+                  icon="🎂"
+                  label="다음 생일까지"
+                  value={result.isBirthdayToday ? "오늘!" : `${result.daysUntilBirthday}일`}
+                  accent="bg-pink-50 ring-pink-200"
+                />
+                <InfoBox
+                  icon="📅"
+                  label="태어난 지"
+                  value={`D+${result.totalDays.toLocaleString()}`}
+                  accent="bg-emerald-50 ring-emerald-200"
+                />
+                <InfoBox
+                  icon="🗓️"
+                  label="출생 요일"
+                  value={result.birthWeekday}
+                  accent="bg-amber-50 ring-amber-200"
+                />
+                <InfoBox
+                  icon="⏳"
+                  label="살아온 햇수"
+                  value={`만 ${result.age}년`}
+                  accent="bg-sky-50 ring-sky-200"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 📋 안내 컴포넌트 (만 나이 설명)
+    // ========================================
+    function GuideCard() {
+      return (
+        <div className="bg-white rounded-2xl shadow p-5 mt-6">
+          <h2 className="text-base font-bold text-gray-800 mb-3">📋 만 나이란?</h2>
+          <ul className="space-y-2 text-sm text-gray-600 leading-relaxed">
+            <li className="flex gap-2">
+              <span className="text-indigo-500 font-bold">•</span>
+              태어난 날을 기준으로 1년이 지날 때마다 한 살씩 늘어나는 나이예요.
+            </li>
+            <li className="flex gap-2">
+              <span className="text-indigo-500 font-bold">•</span>
+              올해 생일이 지났으면 (올해 - 출생연도), 아직 안 지났으면 거기서 한 살을 뺍니다.
+            </li>
+            <li className="flex gap-2">
+              <span className="text-indigo-500 font-bold">•</span>
+              2023년 6월부터 우리나라 공식 나이는 모두 만 나이로 통일되었어요.
+            </li>
+          </ul>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 전체 앱 (여러 컴포넌트를 합치기)
+    // ========================================
+    function App() {
+      return (
+        <div className="w-full max-w-md">
+          <h1 className="text-3xl font-extrabold text-center text-gray-800 mb-2">
+            만 나이 계산기
+          </h1>
+          <p className="text-center text-gray-500 mb-8">2주차 · 생년월일로 만 나이 계산하기</p>
+
+          {/* 컴포넌트를 태그처럼 사용할 수 있어요 */}
+          <AgeCalculator />
+          <GuideCard />
+
+          <p className="text-center text-xs text-gray-400 mt-6">
+            ※ 오늘 날짜를 기준으로 자동 계산됩니다.
+          </p>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 화면에 App 그리기 (React 18 방식)
+    // ========================================
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+
+  </script>
+</body>
+</html>

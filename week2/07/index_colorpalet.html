@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>색상 팔레트 생성기 - 2주차</title>
+  <!-- Tailwind CSS (스타일링을 위한 라이브러리) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 본체 -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <!-- React를 화면(DOM)에 그려주는 라이브러리 -->
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- JSX 문법을 브라우저가 이해하도록 변환해주는 도구 -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gradient-to-br from-sky-100 to-indigo-100 min-h-screen flex items-center justify-center p-4">
+  <!-- React 앱이 그려질 자리 -->
+  <div id="root"></div>
+
+  <!-- type="text/babel" 을 적어야 JSX 문법을 사용할 수 있어요 -->
+  <script type="text/babel">
+
+    // React에서 자주 쓰는 기능(Hook)을 꺼내옵니다.
+    const { useState, useEffect } = React;
+
+    // ========================================
+    // 🎨 색상 변환 도우미 함수들 (외부 라이브러리 없이 직접 구현)
+    // ========================================
+
+    // "#RRGGBB" 문자열을 { r, g, b } 객체로 바꿔줍니다. (0~255)
+    function hexToRgb(hex) {
+      // 앞에 # 이 있으면 떼어내고, 짧은 형식(#abc)도 풀어서 처리해요.
+      let clean = hex.replace("#", "");
+      if (clean.length === 3) {
+        clean = clean.split("").map((c) => c + c).join("");
+      }
+      const num = parseInt(clean, 16);
+      return {
+        r: (num >> 16) & 255,
+        g: (num >> 8) & 255,
+        b: num & 255,
+      };
+    }
+
+    // { r, g, b } 를 "#RRGGBB" 문자열로 바꿔줍니다. (항상 대문자 6자리)
+    function rgbToHex(r, g, b) {
+      // 0~255 범위를 벗어나지 않도록 안전하게 잘라줍니다.
+      const toHex = (n) => {
+        const v = Math.max(0, Math.min(255, Math.round(n)));
+        return v.toString(16).padStart(2, "0");
+      };
+      return ("#" + toHex(r) + toHex(g) + toHex(b)).toUpperCase();
+    }
+
+    // RGB(0~255) 를 HSL(색상 0~360, 채도/명도 0~100)로 변환합니다.
+    function rgbToHsl(r, g, b) {
+      // 0~1 범위로 정규화
+      r /= 255; g /= 255; b /= 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      let h = 0;
+      let s = 0;
+      const l = (max + min) / 2; // 명도 = 가장 밝은 값과 어두운 값의 평균
+
+      const delta = max - min;
+      if (delta !== 0) {
+        // 채도 계산
+        s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+        // 색상(Hue) 계산
+        if (max === r) {
+          h = (g - b) / delta + (g < b ? 6 : 0);
+        } else if (max === g) {
+          h = (b - r) / delta + 2;
+        } else {
+          h = (r - g) / delta + 4;
+        }
+        h *= 60;
+      }
+      return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
+    }
+
+    // HSL 을 다시 RGB(0~255)로 변환합니다.
+    function hslToRgb(h, s, l) {
+      // 0~1 범위로 정규화
+      s /= 100; l /= 100;
+      const k = (n) => (n + h / 30) % 12;
+      const a = s * Math.min(l, 1 - l);
+      const f = (n) => {
+        const color = l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+        return Math.round(255 * color);
+      };
+      return { r: f(0), g: f(8), b: f(4) };
+    }
+
+    // HSL 값을 받아 바로 "#RRGGBB" HEX 문자열로 만들어주는 편의 함수입니다.
+    function hslToHex(h, s, l) {
+      // 색상(Hue)은 0~360 사이로 한 바퀴 돌려서 맞춰줍니다.
+      const hue = ((h % 360) + 360) % 360;
+      const sat = Math.max(0, Math.min(100, s));
+      const lig = Math.max(0, Math.min(100, l));
+      const { r, g, b } = hslToRgb(hue, sat, lig);
+      return rgbToHex(r, g, b);
+    }
+
+    // 배경색이 밝은지 어두운지 판단해서 글자색(검정/흰색)을 정해줍니다.
+    // 사람 눈이 느끼는 밝기(상대 휘도)를 기준으로 계산해요.
+    function getTextColor(hex) {
+      const { r, g, b } = hexToRgb(hex);
+      // 휘도(밝기) 공식: 초록색을 가장 밝게 느끼는 눈의 특성을 반영
+      const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      // 밝은 배경(0.6 이상)이면 검은 글씨, 어두우면 흰 글씨
+      return luminance > 0.6 ? "#000000" : "#FFFFFF";
+    }
+
+    // ========================================
+    // 🌈 팔레트 생성 규칙들 (기준 색상 → 색상 배열)
+    // ========================================
+    // 각 규칙은 기준 HEX 색상을 받아 HEX 색상 배열을 반환합니다.
+
+    const HARMONY_RULES = {
+      // 보색: 색상환에서 정반대(180도)에 있는 색
+      complementary: {
+        label: "보색",
+        generate: (hex) => {
+          const { r, g, b } = hexToRgb(hex);
+          const { h, s, l } = rgbToHsl(r, g, b);
+          return [
+            hslToHex(h, s, l),        // 기준 색
+            hslToHex(h + 180, s, l),  // 정반대 색
+          ];
+        },
+      },
+      // 유사색: 색상환에서 가까이 있는(±30도) 색들
+      analogous: {
+        label: "유사색",
+        generate: (hex) => {
+          const { r, g, b } = hexToRgb(hex);
+          const { h, s, l } = rgbToHsl(r, g, b);
+          return [
+            hslToHex(h - 60, s, l),
+            hslToHex(h - 30, s, l),
+            hslToHex(h, s, l),        // 기준 색 (가운데)
+            hslToHex(h + 30, s, l),
+            hslToHex(h + 60, s, l),
+          ];
+        },
+      },
+      // 삼각배색: 색상환을 3등분(120도 간격)한 색들
+      triadic: {
+        label: "삼각배색",
+        generate: (hex) => {
+          const { r, g, b } = hexToRgb(hex);
+          const { h, s, l } = rgbToHsl(r, g, b);
+          return [
+            hslToHex(h, s, l),        // 기준 색
+            hslToHex(h + 120, s, l),
+            hslToHex(h + 240, s, l),
+          ];
+        },
+      },
+      // 단색 명도 변화: 같은 색상에서 밝기만 단계별로 바꾼 색들
+      monochromatic: {
+        label: "단색 명암",
+        generate: (hex) => {
+          const { r, g, b } = hexToRgb(hex);
+          const { h, s } = rgbToHsl(r, g, b);
+          // 어두운 색 → 밝은 색 순서로 5단계 명도 변화
+          return [20, 35, 50, 65, 80].map((lightness) => hslToHex(h, s, lightness));
+        },
+      },
+    };
+
+    // 셀렉트/버튼에서 순서대로 보여주기 위한 규칙 키 목록
+    const RULE_KEYS = ["complementary", "analogous", "triadic", "monochromatic"];
+
+    // ========================================
+    // 🎛️ 규칙 선택 버튼 그룹 컴포넌트
+    // ========================================
+    function RuleSelector({ activeRule, onChange }) {
+      return (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {RULE_KEYS.map((key) => {
+            const isActive = key === activeRule;
+            return (
+              <button
+                key={key}
+                onClick={() => onChange(key)}
+                className={`px-3 py-2 rounded-lg text-sm font-bold transition
+                  ${isActive
+                    ? "bg-indigo-600 text-white shadow"
+                    : "bg-gray-100 text-gray-600 hover:bg-indigo-100"}`}
+              >
+                {HARMONY_RULES[key].label}
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🟦 색상 스와치 한 칸 컴포넌트
+    // ========================================
+    function ColorSwatch({ hex }) {
+      // 이 스와치가 방금 복사되었는지 여부 (복사됨! 피드백용)
+      const [copied, setCopied] = useState(false);
+
+      // 배경색에 맞춰 글자색을 자동으로 결정해요.
+      const textColor = getTextColor(hex);
+      const { r, g, b } = hexToRgb(hex);
+
+      // HEX 코드를 클립보드에 복사하고 잠깐 "복사됨!" 표시를 보여줍니다.
+      function handleCopy() {
+        navigator.clipboard.writeText(hex).then(() => {
+          setCopied(true);
+          // 1.2초 뒤에 다시 원래 상태로 되돌립니다.
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }
+
+      return (
+        <button
+          onClick={handleCopy}
+          style={{ backgroundColor: hex, color: textColor }}
+          className="relative w-full rounded-2xl shadow-sm p-5 text-left
+                     flex flex-col justify-between min-h-[120px] transition
+                     hover:scale-[1.02] active:scale-95"
+          aria-label={`${hex} 복사하기`}
+        >
+          {/* ---------- 복사됨 피드백 (조건부 렌더링) ---------- */}
+          {copied && (
+            <span className="absolute top-3 right-3 text-xs font-bold px-2 py-1 rounded-full
+                             bg-black/30 backdrop-blur">
+              복사됨!
+            </span>
+          )}
+
+          {/* ---------- 색상 정보 (HEX / RGB) ---------- */}
+          <div>
+            <p className="text-lg font-extrabold tracking-wide">{hex}</p>
+            <p className="text-xs opacity-80 mt-1">RGB {r}, {g}, {b}</p>
+          </div>
+
+          {/* ---------- 클릭 안내 ---------- */}
+          <p className="text-xs opacity-70 mt-3">📋 클릭하면 복사돼요</p>
+        </button>
+      );
+    }
+
+    // ========================================
+    // 🖍️ 기준 색상 입력부 (컬러 피커 + HEX 직접 입력)
+    // ========================================
+    function BaseColorInput({ baseColor, onChange }) {
+      // HEX 텍스트 입력칸의 임시 값 (입력 중인 글자를 그대로 보여주기 위함)
+      const [hexInput, setHexInput] = useState(baseColor);
+
+      // 바깥에서 baseColor가 바뀌면(예: 컬러 피커 조작) 입력칸도 따라 맞춰줍니다.
+      useEffect(() => {
+        setHexInput(baseColor);
+      }, [baseColor]);
+
+      // HEX 텍스트를 입력할 때마다 실행됩니다.
+      function handleHexChange(value) {
+        // 입력은 그대로 보여주되, 올바른 6자리 HEX일 때만 실제 기준 색을 바꿔요.
+        setHexInput(value);
+        const normalized = value.startsWith("#") ? value : "#" + value;
+        if (/^#[0-9a-fA-F]{6}$/.test(normalized)) {
+          onChange(normalized.toUpperCase());
+        }
+      }
+
+      return (
+        <div className="flex flex-col sm:flex-row items-center gap-4">
+          {/* ---------- HTML 컬러 피커 (메인 입력 수단) ---------- */}
+          <div className="relative">
+            <input
+              type="color"
+              value={baseColor}
+              onChange={(e) => onChange(e.target.value.toUpperCase())}
+              aria-label="기준 색상 선택"
+              className="w-24 h-24 rounded-2xl border-4 border-white shadow-md cursor-pointer
+                         appearance-none bg-transparent"
+            />
+          </div>
+
+          {/* ---------- HEX 직접 입력 ---------- */}
+          <div className="flex-1 w-full">
+            <label className="block text-sm font-semibold text-gray-700 mb-1">
+              기준 색상 (HEX)
+            </label>
+            <input
+              type="text"
+              value={hexInput}
+              onChange={(e) => handleHexChange(e.target.value)}
+              placeholder="#4F46E5"
+              maxLength={7}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg font-mono uppercase
+                         focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              컬러 피커로 고르거나 HEX 코드를 직접 입력하세요. (예: #4F46E5)
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 📋 생성된 팔레트 목록 컴포넌트
+    // ========================================
+    function PaletteGrid({ colors }) {
+      return (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {colors.map((hex, index) => (
+            // 같은 색이 중복될 수 있어 index를 함께 key로 사용해요.
+            <ColorSwatch key={hex + index} hex={hex} />
+          ))}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 전체 앱 (여러 컴포넌트를 합치기)
+    // ========================================
+    function App() {
+      // 기준 색상 상태 (처음 값은 인디고 계열)
+      const [baseColor, setBaseColor] = useState("#4F46E5");
+      // 현재 선택된 팔레트 생성 규칙
+      const [rule, setRule] = useState("analogous");
+
+      // 기준 색상과 규칙으로부터 팔레트 색상 배열을 만들어냅니다.
+      const palette = HARMONY_RULES[rule].generate(baseColor);
+
+      return (
+        <div className="w-full max-w-2xl">
+          <h1 className="text-3xl font-extrabold text-center text-gray-800 mb-2">
+            색상 팔레트 생성기
+          </h1>
+          <p className="text-center text-gray-500 mb-8">
+            2주차 · 기준 색상 하나로 어울리는 색 조합을 만들어 보세요
+          </p>
+
+          {/* ---------- 기준 색상 + 규칙 선택 카드 ---------- */}
+          <div className="bg-white rounded-2xl shadow-lg p-6">
+            {/* 기준 색상 입력 */}
+            <BaseColorInput baseColor={baseColor} onChange={setBaseColor} />
+
+            {/* 규칙 선택 */}
+            <div className="mt-6">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                조화 규칙 선택
+              </label>
+              <RuleSelector activeRule={rule} onChange={setRule} />
+            </div>
+          </div>
+
+          {/* ---------- 생성된 팔레트 ---------- */}
+          <div className="mt-6">
+            <p className="text-sm font-semibold text-gray-600 mb-3">
+              🎨 {HARMONY_RULES[rule].label} 팔레트 · {palette.length}색
+            </p>
+            <PaletteGrid colors={palette} />
+          </div>
+
+          <p className="text-center text-xs text-gray-400 mt-6">
+            ※ 색상 변환(HEX ↔ RGB ↔ HSL)은 외부 라이브러리 없이 직접 계산됩니다.
+          </p>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 화면에 App 그리기 (React 18 방식)
+    // ========================================
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+
+  </script>
+</body>
+</html>
