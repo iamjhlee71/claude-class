@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF 생성기</title>
+  <!-- ⚠️ 모든 CDN은 버전 고정. Babel 은 반드시 7.x (8.x 미지원) -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.25.9/babel.min.js"></script>
+  <!-- PDF 생성: jsPDF (UMD 전역 window.jspdf.jsPDF) + html2canvas (전역 window.html2canvas)
+       ✅ 두 URL 모두 빌드 전 curl 로 200 확인, 전역변수명 확인 완료.
+       한글 깨짐 방지: jsPDF 기본 폰트는 한글 미지원이므로 본문/미리보기를
+       html2canvas 로 DOM 캡처 → 이미지로 PDF 에 삽입한다 (한글/이모지/스타일 그대로). -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <style>
+    @keyframes pop {
+      0% { transform: scale(0.96); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .animate-pop { animation: pop 0.25s ease-out; }
+
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      height: 8px; border-radius: 9999px; background: #fed7aa; outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 22px; height: 22px; border-radius: 9999px;
+      background: #f97316; border: 3px solid #fff;
+      box-shadow: 0 2px 6px rgba(249,115,22,0.4); cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px; height: 18px; border-radius: 9999px;
+      background: #f97316; border: 3px solid #fff; cursor: pointer;
+    }
+    /* 미리보기 페이지 종횡비 비주얼 */
+    .page-shadow { box-shadow: 0 10px 40px rgba(0,0,0,0.10); }
+  </style>
+</head>
+<body class="bg-orange-50">
+  <div id="root"></div>
+  <script type="text/babel">
+    // ========================================
+    // React Hooks
+    // ========================================
+    const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+    // ========================================
+    // 📐 용지 규격 (mm)
+    // ========================================
+    const PAPER = {
+      a4: { label: 'A4', w: 210, h: 297 },
+      letter: { label: 'Letter', w: 215.9, h: 279.4 },
+    };
+    // 현재 방향에 맞춘 mm 크기
+    function pageSizeMM(paper, orientation) {
+      const p = PAPER[paper];
+      return orientation === 'landscape'
+        ? { w: p.h, h: p.w }
+        : { w: p.w, h: p.h };
+    }
+
+    // ========================================
+    // 🎨 Design System Components
+    // ========================================
+    function Card({ children, className = '' }) {
+      return (
+        <div className={`bg-white rounded-3xl shadow-lg shadow-orange-100/60 p-5 sm:p-6 ${className}`}>
+          {children}
+        </div>
+      );
+    }
+
+    function Button({ children, variant = 'primary', size = 'md', disabled = false, onClick, className = '', ...props }) {
+      const base = 'inline-flex items-center justify-center gap-1.5 font-bold rounded-2xl transition-all active:scale-95 focus:outline-none focus:ring-4 disabled:opacity-40 disabled:active:scale-100 disabled:cursor-not-allowed';
+      const variants = {
+        primary: 'bg-orange-500 text-white hover:bg-orange-600 focus:ring-orange-200 shadow-md shadow-orange-200',
+        secondary: 'bg-orange-100 text-orange-700 hover:bg-orange-200 focus:ring-orange-100',
+        ghost: 'bg-transparent text-orange-600 hover:bg-orange-50 focus:ring-orange-100',
+        danger: 'bg-rose-100 text-rose-600 hover:bg-rose-200 focus:ring-rose-100',
+      };
+      const sizes = {
+        sm: 'px-3 py-1.5 text-sm',
+        md: 'px-4 py-2.5 text-base',
+        lg: 'px-5 py-3.5 text-lg',
+        icon: 'w-11 h-11 text-xl',
+      };
+      return (
+        <button type="button" disabled={disabled} onClick={onClick}
+          className={`${base} ${variants[variant]} ${sizes[size]} ${className}`} {...props}>
+          {children}
+        </button>
+      );
+    }
+
+    function Field({ label, hint, children }) {
+      return (
+        <div>
+          <div className="flex items-baseline justify-between mb-1.5">
+            <label className="text-sm font-semibold text-stone-600">{label}</label>
+            {hint && <span className="text-xs text-stone-400">{hint}</span>}
+          </div>
+          {children}
+        </div>
+      );
+    }
+
+    function TextInput({ value, onChange, placeholder = '', type = 'text', className = '' }) {
+      return (
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+          className={`w-full rounded-2xl bg-stone-50 ring-1 ring-stone-200 px-4 py-3 text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-400 transition ${className}`} />
+      );
+    }
+
+    function TextArea({ value, onChange, placeholder = '', rows = 3 }) {
+      return (
+        <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows}
+          className="w-full rounded-2xl bg-stone-50 ring-1 ring-stone-200 px-4 py-3 text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-400 transition resize-none leading-relaxed" />
+      );
+    }
+
+    function Slider({ value, min, max, step = 1, onChange }) {
+      return (
+        <input type="range" min={min} max={max} step={step} value={value}
+          onChange={(e) => onChange(Number(e.target.value))} className="w-full" />
+      );
+    }
+
+    function Select({ value, onChange, options }) {
+      return (
+        <select value={value} onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded-2xl bg-stone-50 ring-1 ring-stone-200 px-4 py-3 text-stone-800 focus:outline-none focus:ring-2 focus:ring-orange-400 transition appearance-none cursor-pointer">
+          {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      );
+    }
+
+    function SegmentedTabs({ tabs, value, onChange }) {
+      return (
+        <div className="flex bg-orange-100/70 rounded-2xl p-1 gap-1 overflow-x-auto">
+          {tabs.map((t) => {
+            const active = t.value === value;
+            return (
+              <button key={t.value} type="button" onClick={() => onChange(t.value)}
+                className={`flex-1 whitespace-nowrap px-3 py-2 rounded-xl text-sm font-bold transition-all ${
+                  active ? 'bg-white text-orange-600 shadow-sm' : 'text-orange-500/80 hover:text-orange-600'
+                }`}>
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    function ColorPicker({ label, value, onChange }) {
+      return (
+        <div className="flex-1">
+          <label className="block text-xs font-semibold text-stone-500 mb-1">{label}</label>
+          <div className="rounded-2xl ring-1 ring-stone-200 p-1 bg-stone-50 flex items-center gap-2 px-2">
+            <input type="color" value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}
+              style={{ width: 36, height: 36, border: 'none', background: 'transparent', cursor: 'pointer' }} />
+            <span className="text-xs text-stone-500 font-mono">{value}</span>
+          </div>
+        </div>
+      );
+    }
+
+    function Toggle({ label, checked, onChange }) {
+      return (
+        <button type="button" onClick={() => onChange(!checked)} aria-pressed={checked}
+          className="flex items-center justify-between w-full">
+          <span className="text-sm font-semibold text-stone-600">{label}</span>
+          <span className={`relative inline-flex w-12 h-7 rounded-full transition-colors ${checked ? 'bg-orange-500' : 'bg-stone-300'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
+          </span>
+        </button>
+      );
+    }
+
+    // ========================================
+    // 🧰 라이브러리 로드 상태 훅
+    // ========================================
+    function useLibStatus() {
+      const [status, setStatus] = useState(() => ({
+        jspdf: typeof window.jspdf !== 'undefined' && !!window.jspdf.jsPDF,
+        html2canvas: typeof window.html2canvas !== 'undefined',
+      }));
+      useEffect(() => {
+        if (status.jspdf && status.html2canvas) return;
+        let tries = 0;
+        const id = setInterval(() => {
+          tries++;
+          const next = {
+            jspdf: typeof window.jspdf !== 'undefined' && !!window.jspdf.jsPDF,
+            html2canvas: typeof window.html2canvas !== 'undefined',
+          };
+          if (next.jspdf !== status.jspdf || next.html2canvas !== status.html2canvas) setStatus(next);
+          if ((next.jspdf && next.html2canvas) || tries > 40) clearInterval(id); // ~10s
+        }, 250);
+        return () => clearInterval(id);
+      }, [status.jspdf, status.html2canvas]);
+      return status;
+    }
+
+    // ========================================
+    // 🛠️ PDF 생성 유틸
+    // ========================================
+    // DOM 노드를 html2canvas 로 캡처 → jsPDF 페이지에 비율 유지하며 채워넣기 (여러 페이지 자동 분할)
+    async function domToPdf(node, { paper, orientation, marginMM = 12 }) {
+      const { jsPDF } = window.jspdf;
+      const canvas = await window.html2canvas(node, {
+        scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false,
+      });
+      const { w: pageW, h: pageH } = pageSizeMM(paper, orientation);
+      const pdf = new jsPDF({ orientation, unit: 'mm', format: [pageW, pageH] });
+
+      const usableW = pageW - marginMM * 2;
+      // 캔버스 픽셀 → mm 환산 비율 (가로 기준 맞춤)
+      const pxPerMM = canvas.width / usableW;
+      const usableHpx = (pageH - marginMM * 2) * pxPerMM; // 한 페이지에 들어가는 캔버스 px 높이
+      const totalPages = Math.max(1, Math.ceil(canvas.height / usableHpx));
+
+      for (let i = 0; i < totalPages; i++) {
+        if (i > 0) pdf.addPage([pageW, pageH], orientation);
+        const sliceH = Math.min(usableHpx, canvas.height - i * usableHpx);
+        // 페이지별 슬라이스를 임시 캔버스로 잘라 이미지화
+        const slice = document.createElement('canvas');
+        slice.width = canvas.width;
+        slice.height = sliceH;
+        const ctx = slice.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, slice.width, slice.height);
+        ctx.drawImage(canvas, 0, i * usableHpx, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+        const imgData = slice.toDataURL('image/jpeg', 0.95);
+        const imgHmm = sliceH / pxPerMM;
+        pdf.addImage(imgData, 'JPEG', marginMM, marginMM, usableW, imgHmm);
+      }
+      return pdf;
+    }
+
+    // 이미지(dataURL) 한 장을 한 페이지에 fit/fill 로 배치
+    function placeImageOnPage(pdf, img, pageW, pageH, marginMM, fit) {
+      const usableW = pageW - marginMM * 2;
+      const usableH = pageH - marginMM * 2;
+      const ratio = img.width / img.height;
+      let w, h;
+      if (fit) {
+        // 비율 유지하며 페이지 안에 맞춤
+        if (usableW / usableH > ratio) { h = usableH; w = h * ratio; }
+        else { w = usableW; h = w / ratio; }
+      } else {
+        // 가로 꽉 채움
+        w = usableW; h = w / ratio;
+        if (h > usableH) { h = usableH; w = h * ratio; }
+      }
+      const x = marginMM + (usableW - w) / 2;
+      const y = marginMM + (usableH - h) / 2;
+      pdf.addImage(img.dataURL, 'JPEG', x, y, w, h);
+    }
+
+    function fileToImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const im = new Image();
+          im.onload = () => {
+            // 캔버스로 JPEG 정규화 (PNG 투명 → 흰 배경, 용량 절감)
+            const c = document.createElement('canvas');
+            c.width = im.naturalWidth; c.height = im.naturalHeight;
+            const ctx = c.getContext('2d');
+            ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
+            ctx.drawImage(im, 0, 0);
+            resolve({
+              id: Math.random().toString(36).slice(2),
+              name: file.name,
+              width: im.naturalWidth, height: im.naturalHeight,
+              dataURL: c.toDataURL('image/jpeg', 0.92),
+            });
+          };
+          im.onerror = reject;
+          im.src = e.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // ========================================
+    // 📄 미리보기 페이지 (캡처 대상 + 화면 표시 공용)
+    //    forwardRef 로 캡처용 ref 노출
+    // ========================================
+    const DocPreviewPage = React.forwardRef(function DocPreviewPage(
+      { doc, paper, orientation, captureMode = false }, ref
+    ) {
+      const { w, h } = pageSizeMM(paper, orientation);
+      const aspect = w / h;
+      // 캡처 모드: 실제 mm 기준 px 폭으로 고정(고해상도). 화면 모드: 반응형.
+      const fixedW = captureMode ? Math.round(w * 3.78) : null; // 1mm ≈ 3.78px (96dpi)
+      const style = captureMode
+        ? { width: fixedW + 'px', minHeight: Math.round(h * 3.78) + 'px', padding: '40px 44px' }
+        : { aspectRatio: aspect, padding: '7% 7.5%' };
+
+      return (
+        <div
+          ref={ref}
+          className={`bg-white text-stone-800 ${captureMode ? '' : 'page-shadow rounded-xl overflow-hidden mx-auto w-full'}`}
+          style={style}
+        >
+          {doc.title.trim() ? (
+            <h1 className="font-extrabold mb-4 break-words"
+              style={{ fontSize: (doc.fontSize + 10) + 'px', color: doc.titleColor, lineHeight: 1.25 }}>
+              {doc.title}
+            </h1>
+          ) : null}
+          {doc.title.trim() && <div className="h-px bg-stone-200 mb-4" />}
+          <div className="whitespace-pre-wrap break-words"
+            style={{ fontSize: doc.fontSize + 'px', lineHeight: doc.lineHeight, color: '#1c1917' }}>
+            {doc.body.trim() || (captureMode ? '' : <span className="text-stone-300">본문 내용이 여기에 표시됩니다…</span>)}
+          </div>
+        </div>
+      );
+    });
+
+    // ========================================
+    // 📝 모드 1+3: 문서 작성 → PDF (한글: html2canvas 캡처 방식)
+    // ========================================
+    function DocMode({ libs }) {
+      const [doc, setDoc] = useState({
+        title: '회의록',
+        body: '안녕하세요 👋\n\n이 PDF 생성기는 한글과 이모지가 깨지지 않습니다.\nhtml2canvas 로 미리보기 화면을 그대로 캡처해 PDF 에 담기 때문이에요.\n\n• 제목과 본문을 입력하세요\n• 폰트 크기, 용지, 방향을 조절하세요\n• 오른쪽 미리보기가 그대로 PDF 가 됩니다.',
+        fontSize: 16, lineHeight: 1.7, titleColor: '#ea580c',
+      });
+      const [paper, setPaper] = useState('a4');
+      const [orientation, setOrientation] = useState('portrait');
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState(null);
+      const captureRef = useRef(null);
+
+      const set = (patch) => setDoc((p) => ({ ...p, ...patch }));
+      const ready = libs.jspdf && libs.html2canvas;
+      const hasContent = doc.title.trim() || doc.body.trim();
+
+      const handleDownload = async () => {
+        if (!ready || !hasContent) return;
+        setBusy(true); setErr(null);
+        try {
+          const node = captureRef.current;
+          const pdf = await domToPdf(node, { paper, orientation, marginMM: 12 });
+          const name = (doc.title.trim() || '문서').replace(/[\\/:*?"<>|]/g, '_');
+          pdf.save(`${name}.pdf`);
+        } catch (e) {
+          setErr('PDF 생성 중 오류가 발생했습니다: ' + e.message);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return (
+        <div className="grid gap-5 lg:grid-cols-2 items-start">
+          {/* 입력 */}
+          <div className="space-y-5">
+            <Card>
+              <h2 className="text-sm font-bold text-stone-500 mb-4">✍️ 문서 내용</h2>
+              <div className="space-y-3">
+                <Field label="제목">
+                  <TextInput value={doc.title} onChange={(v) => set({ title: v })} placeholder="문서 제목" />
+                </Field>
+                <Field label="본문" hint="한글·이모지 OK">
+                  <TextArea value={doc.body} onChange={(v) => set({ body: v })} placeholder="본문 내용을 입력하세요" rows={10} />
+                </Field>
+              </div>
+            </Card>
+
+            <Card>
+              <h2 className="text-sm font-bold text-stone-500 mb-4">⚙️ 서식 & 용지</h2>
+              <div className="space-y-4">
+                <Field label="본문 글자 크기" hint={`${doc.fontSize} px`}>
+                  <Slider value={doc.fontSize} min={11} max={28} step={1} onChange={(v) => set({ fontSize: v })} />
+                </Field>
+                <Field label="줄 간격" hint={doc.lineHeight.toFixed(1)}>
+                  <Slider value={doc.lineHeight} min={1.2} max={2.4} step={0.1} onChange={(v) => set({ lineHeight: v })} />
+                </Field>
+                <ColorPicker label="제목 색상" value={doc.titleColor} onChange={(v) => set({ titleColor: v })} />
+                <Field label="용지 크기">
+                  <SegmentedTabs
+                    tabs={[{ value: 'a4', label: 'A4' }, { value: 'letter', label: 'Letter' }]}
+                    value={paper} onChange={setPaper} />
+                </Field>
+                <Field label="방향">
+                  <SegmentedTabs
+                    tabs={[{ value: 'portrait', label: '세로 ▯' }, { value: 'landscape', label: '가로 ▭' }]}
+                    value={orientation} onChange={setOrientation} />
+                </Field>
+              </div>
+            </Card>
+          </div>
+
+          {/* 미리보기 */}
+          <div className="lg:sticky lg:top-6 space-y-4">
+            <Card>
+              <h2 className="text-sm font-bold text-stone-500 mb-4 text-center">👀 실시간 미리보기</h2>
+              <div className="bg-stone-100 rounded-2xl p-4 sm:p-6 overflow-auto max-h-[60vh]">
+                <DocPreviewPage doc={doc} paper={paper} orientation={orientation} />
+              </div>
+              <Button variant="primary" size="lg" className="w-full mt-5"
+                disabled={!ready || !hasContent || busy} onClick={handleDownload}>
+                {busy ? '⏳ 생성 중…' : '⬇️ PDF 다운로드'}
+              </Button>
+              {!hasContent && <p className="text-center text-xs text-stone-400 mt-2">제목 또는 본문을 입력하세요</p>}
+              {err && <p className="text-center text-xs text-rose-500 mt-2 font-semibold">{err}</p>}
+            </Card>
+          </div>
+
+          {/* 캡처 전용(화면 밖) 고해상도 노드 — 한글 깨짐 없이 PDF 로 들어감 */}
+          <div style={{ position: 'fixed', left: '-99999px', top: 0 }} aria-hidden="true">
+            <DocPreviewPage ref={captureRef} doc={doc} paper={paper} orientation={orientation} captureMode />
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🖼️ 모드 2: 이미지 → PDF
+    // ========================================
+    function ImageMode({ libs }) {
+      const [images, setImages] = useState([]);
+      const [paper, setPaper] = useState('a4');
+      const [orientation, setOrientation] = useState('portrait');
+      const [fit, setFit] = useState(true);
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState(null);
+      const [dragOver, setDragOver] = useState(false);
+      const fileRef = useRef(null);
+
+      const ready = libs.jspdf;
+
+      const addFiles = useCallback(async (fileList) => {
+        const files = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
+        if (!files.length) return;
+        setErr(null);
+        try {
+          const imgs = await Promise.all(files.map(fileToImage));
+          setImages((prev) => [...prev, ...imgs]);
+        } catch (e) {
+          setErr('이미지를 불러오지 못했습니다: ' + e.message);
+        }
+      }, []);
+
+      const onDrop = (e) => {
+        e.preventDefault(); setDragOver(false);
+        if (e.dataTransfer.files) addFiles(e.dataTransfer.files);
+      };
+
+      const move = (idx, dir) => {
+        setImages((prev) => {
+          const next = [...prev];
+          const j = idx + dir;
+          if (j < 0 || j >= next.length) return prev;
+          [next[idx], next[j]] = [next[j], next[idx]];
+          return next;
+        });
+      };
+      const remove = (id) => setImages((prev) => prev.filter((im) => im.id !== id));
+
+      const handleDownload = () => {
+        if (!ready || !images.length) return;
+        setBusy(true); setErr(null);
+        try {
+          const { jsPDF } = window.jspdf;
+          const { w: pageW, h: pageH } = pageSizeMM(paper, orientation);
+          const pdf = new jsPDF({ orientation, unit: 'mm', format: [pageW, pageH] });
+          images.forEach((img, i) => {
+            if (i > 0) pdf.addPage([pageW, pageH], orientation);
+            placeImageOnPage(pdf, img, pageW, pageH, 8, fit);
+          });
+          pdf.save('이미지모음.pdf');
+        } catch (e) {
+          setErr('PDF 생성 중 오류: ' + e.message);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return (
+        <div className="grid gap-5 lg:grid-cols-2 items-start">
+          {/* 업로드 + 설정 */}
+          <div className="space-y-5">
+            <Card>
+              <h2 className="text-sm font-bold text-stone-500 mb-4">📥 이미지 업로드</h2>
+              <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
+                onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
+              <div
+                onClick={() => fileRef.current && fileRef.current.click()}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={onDrop}
+                className={`cursor-pointer rounded-2xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
+                  dragOver ? 'border-orange-400 bg-orange-50' : 'border-stone-300 bg-stone-50 hover:border-orange-300'
+                }`}>
+                <div className="text-4xl mb-2">🖼️</div>
+                <p className="text-sm font-semibold text-stone-600">클릭하거나 이미지를 드래그하세요</p>
+                <p className="text-xs text-stone-400 mt-1">JPG · PNG · 여러 장 가능 (각 1페이지)</p>
+              </div>
+            </Card>
+
+            <Card>
+              <h2 className="text-sm font-bold text-stone-500 mb-4">⚙️ 용지 설정</h2>
+              <div className="space-y-4">
+                <Field label="용지 크기">
+                  <SegmentedTabs tabs={[{ value: 'a4', label: 'A4' }, { value: 'letter', label: 'Letter' }]}
+                    value={paper} onChange={setPaper} />
+                </Field>
+                <Field label="방향">
+                  <SegmentedTabs tabs={[{ value: 'portrait', label: '세로 ▯' }, { value: 'landscape', label: '가로 ▭' }]}
+                    value={orientation} onChange={setOrientation} />
+                </Field>
+                <div className="pt-1">
+                  <Toggle label="용지에 맞춤 (비율 유지)" checked={fit} onChange={setFit} />
+                  <p className="text-xs text-stone-400 mt-1.5">
+                    {fit ? '이미지 전체가 페이지 안에 들어가도록 축소합니다.' : '가로 폭을 채웁니다 (세로 넘치면 맞춤).'}
+                  </p>
+                </div>
+              </div>
+            </Card>
+          </div>
+
+          {/* 목록 + 다운로드 */}
+          <div className="lg:sticky lg:top-6">
+            <Card>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-bold text-stone-500">🗂️ 페이지 순서 ({images.length}장)</h2>
+                {images.length > 0 && (
+                  <Button variant="danger" size="sm" onClick={() => setImages([])}>전체 삭제</Button>
+                )}
+              </div>
+
+              {images.length === 0 ? (
+                <div className="text-center text-stone-400 py-12">
+                  <div className="text-4xl mb-2">📭</div>
+                  <p className="text-sm font-semibold">업로드한 이미지가 여기 표시됩니다</p>
+                </div>
+              ) : (
+                <ul className="space-y-2 max-h-[48vh] overflow-auto pr-1">
+                  {images.map((im, i) => (
+                    <li key={im.id} className="flex items-center gap-3 bg-stone-50 rounded-2xl p-2 ring-1 ring-stone-100 animate-pop">
+                      <span className="w-6 text-center text-sm font-bold text-orange-500">{i + 1}</span>
+                      <img src={im.dataURL} alt={im.name} className="w-14 h-14 object-cover rounded-xl ring-1 ring-stone-200" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-stone-700 truncate">{im.name}</p>
+                        <p className="text-xs text-stone-400">{im.width}×{im.height}</p>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
+                          className="w-7 h-6 rounded-lg bg-white ring-1 ring-stone-200 text-stone-500 disabled:opacity-30 hover:bg-orange-50">▲</button>
+                        <button type="button" onClick={() => move(i, 1)} disabled={i === images.length - 1}
+                          className="w-7 h-6 rounded-lg bg-white ring-1 ring-stone-200 text-stone-500 disabled:opacity-30 hover:bg-orange-50">▼</button>
+                      </div>
+                      <button type="button" onClick={() => remove(im.id)}
+                        className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 hover:bg-rose-100 font-bold">✕</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <Button variant="primary" size="lg" className="w-full mt-5"
+                disabled={!ready || !images.length || busy} onClick={handleDownload}>
+                {busy ? '⏳ 생성 중…' : `⬇️ PDF 다운로드 (${images.length}p)`}
+              </Button>
+              {err && <p className="text-center text-xs text-rose-500 mt-2 font-semibold">{err}</p>}
+            </Card>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚦 라이브러리 상태 배너
+    // ========================================
+    function LibBanner({ libs }) {
+      const ok = libs.jspdf && libs.html2canvas;
+      if (ok) return null;
+      const loading = (
+        <div className="max-w-5xl mx-auto mb-5">
+          <div className="rounded-2xl bg-amber-50 ring-1 ring-amber-200 px-4 py-3 text-sm text-amber-700 flex items-center gap-2">
+            <span className="animate-pulse">⏳</span>
+            <span>PDF 라이브러리(jsPDF · html2canvas)를 불러오는 중입니다…</span>
+          </div>
+        </div>
+      );
+      // 10초 후에도 안 되면 실패 안내 — 상태로 구분
+      return loading;
+    }
+
+    function LibError({ libs, settled }) {
+      if (!settled) return null;
+      if (libs.jspdf && libs.html2canvas) return null;
+      const missing = [
+        !libs.jspdf && 'jsPDF',
+        !libs.html2canvas && 'html2canvas',
+      ].filter(Boolean).join(', ');
+      return (
+        <div className="max-w-5xl mx-auto mb-5">
+          <div className="rounded-2xl bg-rose-50 ring-1 ring-rose-200 px-4 py-3 text-sm text-rose-700">
+            <p className="font-bold mb-1">⚠️ 라이브러리 로드 실패: {missing}</p>
+            <p className="text-rose-600/90">
+              인터넷 연결을 확인하고 새로고침 해주세요. <code className="bg-white/60 px-1 rounded">file://</code> 로 직접 열어 막히는 경우
+              터미널에서 <code className="bg-white/60 px-1 rounded">npx serve .</code> 또는 VS Code Live Server 로 실행하세요.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 App
+    // ========================================
+    function App() {
+      const [mode, setMode] = useState('doc');
+      const libs = useLibStatus();
+      const [settled, setSettled] = useState(false);
+      useEffect(() => {
+        const t = setTimeout(() => setSettled(true), 10000);
+        if (libs.jspdf && libs.html2canvas) { setSettled(true); clearTimeout(t); }
+        return () => clearTimeout(t);
+      }, [libs.jspdf, libs.html2canvas]);
+
+      return (
+        <div className="min-h-screen px-4 py-6 sm:py-10">
+          <header className="text-center mb-6 max-w-5xl mx-auto">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-orange-500 to-rose-500 text-white text-3xl shadow-lg shadow-orange-200 mb-3">
+              📄
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-stone-800">PDF 생성기</h1>
+            <p className="text-sm text-stone-500 mt-1">문서 · 이미지를 PDF 로 — 한글 안 깨짐, 실시간 미리보기 & 다운로드</p>
+          </header>
+
+          <div className="max-w-5xl mx-auto mb-5">
+            <Card className="!p-2">
+              <SegmentedTabs
+                tabs={[{ value: 'doc', label: '✍️ 문서 → PDF' }, { value: 'image', label: '🖼️ 이미지 → PDF' }]}
+                value={mode} onChange={setMode} />
+            </Card>
+          </div>
+
+          {!settled && <LibBanner libs={libs} />}
+          <LibError libs={libs} settled={settled} />
+
+          <div className="max-w-5xl mx-auto">
+            {mode === 'doc' ? <DocMode libs={libs} /> : <ImageMode libs={libs} />}
+          </div>
+
+          <footer className="text-center text-xs text-stone-400 mt-8">
+            PDF 생성기 · jsPDF + html2canvas 기반 · 모든 처리는 브라우저에서만 이뤄집니다 🔒
+          </footer>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 Render
+    // ========================================
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

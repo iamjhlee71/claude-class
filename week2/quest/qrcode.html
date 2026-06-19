@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QR 코드 생성기</title>
+  <!-- ⚠️ 모든 CDN은 버전 고정. Babel 은 반드시 7.x (8.x 미지원) -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.25.9/babel.min.js"></script>
+  <!-- QR 라이브러리: node-qrcode. 1.5.4 엔 UMD 빌드가 없으므로 ESM 번들을 import 해
+       window.QRCode 로 브리지한다. (canvas/SVG, 색상/오류정정/로고 합성 모두 지원) -->
+  <script type="module">
+    import QRCode from 'https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm';
+    window.QRCode = QRCode;
+    window.dispatchEvent(new Event('qrcode:ready'));
+  </script>
+  <style>
+    /* Tailwind 으로 처리 불가능한 부분만 */
+    @keyframes pop {
+      0% { transform: scale(0.96); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .animate-pop { animation: pop 0.25s ease-out; }
+
+    /* range slider (orange 톤) */
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      height: 8px; border-radius: 9999px;
+      background: #fed7aa; /* orange-200 */
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 22px; height: 22px; border-radius: 9999px;
+      background: #f97316; /* orange-500 */
+      border: 3px solid #fff;
+      box-shadow: 0 2px 6px rgba(249,115,22,0.4);
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px; height: 18px; border-radius: 9999px;
+      background: #f97316; border: 3px solid #fff; cursor: pointer;
+    }
+
+    /* color input 동그랗게 */
+    input[type="color"] {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 42px; padding: 0;
+      border: none; border-radius: 14px; cursor: pointer; background: transparent;
+    }
+    input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+    input[type="color"]::-webkit-color-swatch { border: 2px solid #fff; border-radius: 14px; }
+    input[type="color"]::-moz-color-swatch { border: 2px solid #fff; border-radius: 14px; }
+  </style>
+</head>
+<body class="bg-orange-50">
+  <div id="root"></div>
+  <script type="text/babel">
+    // ========================================
+    // React Hooks
+    // ========================================
+    const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+    // ========================================
+    // 🎨 Design System Components
+    // ========================================
+    function Card({ children, className = '' }) {
+      return (
+        <div className={`bg-white rounded-3xl shadow-lg shadow-orange-100/60 p-5 sm:p-6 ${className}`}>
+          {children}
+        </div>
+      );
+    }
+
+    function Button({ children, variant = 'primary', size = 'md', disabled = false, onClick, className = '', ...props }) {
+      const base = 'inline-flex items-center justify-center gap-1.5 font-bold rounded-2xl transition-all active:scale-95 focus:outline-none focus:ring-4 disabled:opacity-40 disabled:active:scale-100 disabled:cursor-not-allowed';
+      const variants = {
+        primary: 'bg-orange-500 text-white hover:bg-orange-600 focus:ring-orange-200 shadow-md shadow-orange-200',
+        secondary: 'bg-orange-100 text-orange-700 hover:bg-orange-200 focus:ring-orange-100',
+        ghost: 'bg-transparent text-orange-600 hover:bg-orange-50 focus:ring-orange-100',
+        danger: 'bg-rose-100 text-rose-600 hover:bg-rose-200 focus:ring-rose-100',
+      };
+      const sizes = {
+        sm: 'px-3 py-1.5 text-sm',
+        md: 'px-4 py-2.5 text-base',
+        lg: 'px-5 py-3.5 text-lg',
+        icon: 'w-11 h-11 text-xl',
+      };
+      return (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onClick}
+          className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
+          {...props}
+        >
+          {children}
+        </button>
+      );
+    }
+
+    function Field({ label, hint, children }) {
+      return (
+        <div>
+          <div className="flex items-baseline justify-between mb-1.5">
+            <label className="text-sm font-semibold text-stone-600">{label}</label>
+            {hint && <span className="text-xs text-stone-400">{hint}</span>}
+          </div>
+          {children}
+        </div>
+      );
+    }
+
+    function TextInput({ value, onChange, placeholder = '', type = 'text', className = '' }) {
+      return (
+        <input
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={`w-full rounded-2xl bg-stone-50 ring-1 ring-stone-200 px-4 py-3 text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-400 transition ${className}`}
+        />
+      );
+    }
+
+    function TextArea({ value, onChange, placeholder = '', rows = 3 }) {
+      return (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          rows={rows}
+          className="w-full rounded-2xl bg-stone-50 ring-1 ring-stone-200 px-4 py-3 text-stone-800 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-orange-400 transition resize-none"
+        />
+      );
+    }
+
+    function Slider({ value, min, max, step = 1, onChange }) {
+      return (
+        <input
+          type="range"
+          min={min} max={max} step={step} value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="w-full"
+        />
+      );
+    }
+
+    function ColorPicker({ label, value, onChange }) {
+      return (
+        <div className="flex-1">
+          <label className="block text-xs font-semibold text-stone-500 mb-1">{label}</label>
+          <div className="rounded-2xl ring-1 ring-stone-200 p-1 bg-stone-50">
+            <input type="color" value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} />
+          </div>
+        </div>
+      );
+    }
+
+    function SegmentedTabs({ tabs, value, onChange }) {
+      return (
+        <div className="flex bg-orange-100/70 rounded-2xl p-1 gap-1 overflow-x-auto">
+          {tabs.map((t) => {
+            const active = t.value === value;
+            return (
+              <button
+                key={t.value}
+                type="button"
+                onClick={() => onChange(t.value)}
+                className={`flex-1 whitespace-nowrap px-3 py-2 rounded-xl text-sm font-bold transition-all ${
+                  active ? 'bg-white text-orange-600 shadow-sm' : 'text-orange-500/80 hover:text-orange-600'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    function Select({ value, onChange, options }) {
+      return (
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded-2xl bg-stone-50 ring-1 ring-stone-200 px-4 py-3 text-stone-800 focus:outline-none focus:ring-2 focus:ring-orange-400 transition appearance-none cursor-pointer"
+        >
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      );
+    }
+
+    // ========================================
+    // 🧩 콘텐츠 타입별 입력 폼 + 인코딩 로직
+    //    각 폼은 { value, onChange } 로 자기 데이터를 관리하고
+    //    buildString(data) 으로 QR 에 들어갈 최종 문자열을 만든다.
+    // ========================================
+
+    // WIFI / vCard 등에서 특수문자 이스케이프
+    function escapeWifi(s) {
+      return String(s).replace(/([\\;,:"])/g, '\\$1');
+    }
+
+    const CONTENT_TYPES = {
+      text: {
+        label: '텍스트/URL',
+        initial: { text: '' },
+        placeholderHint: '아무 텍스트나 링크를 입력하세요',
+        build: (d) => d.text.trim(),
+        Form: ({ data, set }) => (
+          <Field label="텍스트 또는 URL" hint="실시간 생성">
+            <TextArea
+              value={data.text}
+              onChange={(v) => set({ text: v })}
+              placeholder="https://example.com 또는 전달할 메시지"
+              rows={4}
+            />
+          </Field>
+        ),
+      },
+      url: {
+        label: 'URL',
+        initial: { url: '' },
+        build: (d) => {
+          let u = d.url.trim();
+          if (!u) return '';
+          if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(u)) u = 'https://' + u;
+          return u;
+        },
+        Form: ({ data, set }) => (
+          <Field label="웹사이트 주소" hint="http(s):// 자동 추가">
+            <TextInput
+              value={data.url}
+              onChange={(v) => set({ url: v })}
+              placeholder="example.com"
+            />
+          </Field>
+        ),
+      },
+      wifi: {
+        label: 'Wi-Fi',
+        initial: { ssid: '', password: '', encryption: 'WPA', hidden: false },
+        build: (d) => {
+          if (!d.ssid.trim()) return '';
+          const enc = d.encryption;
+          const pw = enc === 'nopass' ? '' : `P:${escapeWifi(d.password)};`;
+          return `WIFI:T:${enc};S:${escapeWifi(d.ssid)};${pw}${d.hidden ? 'H:true;' : ''};`;
+        },
+        Form: ({ data, set }) => (
+          <div className="space-y-3">
+            <Field label="네트워크 이름 (SSID)">
+              <TextInput value={data.ssid} onChange={(v) => set({ ssid: v })} placeholder="MyWiFi" />
+            </Field>
+            <Field label="암호화 방식">
+              <Select
+                value={data.encryption}
+                onChange={(v) => set({ encryption: v })}
+                options={[
+                  { value: 'WPA', label: 'WPA/WPA2/WPA3' },
+                  { value: 'WEP', label: 'WEP' },
+                  { value: 'nopass', label: '비밀번호 없음' },
+                ]}
+              />
+            </Field>
+            {data.encryption !== 'nopass' && (
+              <Field label="비밀번호">
+                <TextInput value={data.password} onChange={(v) => set({ password: v })} placeholder="비밀번호" />
+              </Field>
+            )}
+            <button
+              type="button"
+              onClick={() => set({ hidden: !data.hidden })}
+              className="flex items-center justify-between w-full pt-1"
+              aria-pressed={data.hidden}
+            >
+              <span className="text-sm font-semibold text-stone-600">숨겨진 네트워크</span>
+              <span className={`relative inline-flex w-12 h-7 rounded-full transition-colors ${data.hidden ? 'bg-orange-500' : 'bg-stone-300'}`}>
+                <span className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${data.hidden ? 'translate-x-5' : ''}`} />
+              </span>
+            </button>
+          </div>
+        ),
+      },
+      vcard: {
+        label: '연락처',
+        initial: { name: '', phone: '', email: '', org: '' },
+        build: (d) => {
+          if (!d.name.trim() && !d.phone.trim() && !d.email.trim()) return '';
+          const lines = [
+            'BEGIN:VCARD',
+            'VERSION:3.0',
+            `N:${d.name};;;`,
+            `FN:${d.name}`,
+          ];
+          if (d.org.trim()) lines.push(`ORG:${d.org}`);
+          if (d.phone.trim()) lines.push(`TEL;TYPE=CELL:${d.phone}`);
+          if (d.email.trim()) lines.push(`EMAIL:${d.email}`);
+          lines.push('END:VCARD');
+          return lines.join('\n');
+        },
+        Form: ({ data, set }) => (
+          <div className="space-y-3">
+            <Field label="이름"><TextInput value={data.name} onChange={(v) => set({ name: v })} placeholder="홍길동" /></Field>
+            <Field label="회사/소속 (선택)"><TextInput value={data.org} onChange={(v) => set({ org: v })} placeholder="회사명" /></Field>
+            <Field label="전화번호"><TextInput type="tel" value={data.phone} onChange={(v) => set({ phone: v })} placeholder="010-1234-5678" /></Field>
+            <Field label="이메일"><TextInput type="email" value={data.email} onChange={(v) => set({ email: v })} placeholder="hello@example.com" /></Field>
+          </div>
+        ),
+      },
+      email: {
+        label: '이메일',
+        initial: { to: '', subject: '', body: '' },
+        build: (d) => {
+          if (!d.to.trim()) return '';
+          const params = [];
+          if (d.subject.trim()) params.push('subject=' + encodeURIComponent(d.subject));
+          if (d.body.trim()) params.push('body=' + encodeURIComponent(d.body));
+          return `mailto:${d.to.trim()}${params.length ? '?' + params.join('&') : ''}`;
+        },
+        Form: ({ data, set }) => (
+          <div className="space-y-3">
+            <Field label="받는 사람"><TextInput type="email" value={data.to} onChange={(v) => set({ to: v })} placeholder="hello@example.com" /></Field>
+            <Field label="제목 (선택)"><TextInput value={data.subject} onChange={(v) => set({ subject: v })} placeholder="안녕하세요" /></Field>
+            <Field label="내용 (선택)"><TextArea value={data.body} onChange={(v) => set({ body: v })} placeholder="메일 내용" rows={3} /></Field>
+          </div>
+        ),
+      },
+      sms: {
+        label: 'SMS/전화',
+        initial: { phone: '', message: '' },
+        build: (d) => {
+          if (!d.phone.trim()) return '';
+          if (d.message.trim()) return `SMSTO:${d.phone.trim()}:${d.message}`;
+          return `tel:${d.phone.trim()}`;
+        },
+        Form: ({ data, set }) => (
+          <div className="space-y-3">
+            <Field label="전화번호" hint="내용 없으면 전화 걸기">
+              <TextInput type="tel" value={data.phone} onChange={(v) => set({ phone: v })} placeholder="010-1234-5678" />
+            </Field>
+            <Field label="메시지 (선택)"><TextArea value={data.message} onChange={(v) => set({ message: v })} placeholder="문자 내용 (입력 시 SMS)" rows={3} /></Field>
+          </div>
+        ),
+      },
+    };
+
+    // ========================================
+    // 🖼️ QR 미리보기 (canvas 렌더 + 로고 합성)
+    // ========================================
+    function QrPreview({ text, size, fgColor, bgColor, ecLevel, logo, canvasRef }) {
+      const [error, setError] = useState(null);
+      const [ready, setReady] = useState(false);
+      // ESM 번들은 비동기 로드 → 준비되면 true. 이미 로드됐으면 즉시 true.
+      const [libReady, setLibReady] = useState(() => typeof window.QRCode !== 'undefined');
+
+      // 라이브러리 로드 대기 (qrcode:ready 이벤트 + 폴백 타임아웃)
+      useEffect(() => {
+        if (libReady) return;
+        if (typeof window.QRCode !== 'undefined') { setLibReady(true); return; }
+        const onReady = () => setLibReady(true);
+        window.addEventListener('qrcode:ready', onReady);
+        const timer = setTimeout(() => {
+          if (typeof window.QRCode !== 'undefined') setLibReady(true);
+          else setError('QR 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인 후 새로고침 해주세요.');
+        }, 8000);
+        return () => { window.removeEventListener('qrcode:ready', onReady); clearTimeout(timer); };
+      }, [libReady]);
+
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        if (!libReady) { setReady(false); return; }
+        if (!text) { setReady(false); return; }
+
+        let cancelled = false;
+        window.QRCode.toCanvas(
+          canvas,
+          text,
+          {
+            width: size,
+            margin: 2,
+            errorCorrectionLevel: ecLevel,
+            color: { dark: fgColor, light: bgColor },
+          },
+          (err) => {
+            if (cancelled) return;
+            if (err) { setError('QR 생성 실패: ' + err.message); setReady(false); return; }
+            setError(null);
+            // 로고 합성 (옵션)
+            if (logo) {
+              const ctx = canvas.getContext('2d');
+              const img = new Image();
+              img.onload = () => {
+                if (cancelled) return;
+                const w = canvas.width;
+                const box = w * 0.24;          // 로고 영역 크기
+                const x = (w - box) / 2;
+                // 로고 받침 (가독성 확보용 배경색 패드)
+                const pad = box * 0.12;
+                const r = box * 0.18;
+                const y = (w - box) / 2;
+                ctx.fillStyle = bgColor;
+                roundRect(ctx, x - pad, y - pad, box + pad * 2, box + pad * 2, r);
+                ctx.fill();
+                ctx.drawImage(img, x, y, box, box);
+                setReady(true);
+              };
+              img.src = logo;
+            } else {
+              setReady(true);
+            }
+          }
+        );
+
+        return () => { cancelled = true; };
+      }, [libReady, text, size, fgColor, bgColor, ecLevel, logo]);
+
+      function roundRect(ctx, x, y, w, h, r) {
+        if (w <= 0 || h <= 0) return;
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      return (
+        <div className="flex flex-col items-center">
+          <div
+            className="relative rounded-3xl p-4 transition-all"
+            style={{ background: bgColor, boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }}
+          >
+            <canvas
+              ref={canvasRef}
+              className={`block rounded-xl ${text && !error ? 'animate-pop' : ''}`}
+              style={{ width: 'min(70vw, 280px)', height: 'min(70vw, 280px)', display: text && !error ? 'block' : 'none' }}
+            />
+            {(!text || error) && (
+              <div
+                className="flex flex-col items-center justify-center text-center text-stone-400 px-6"
+                style={{ width: 'min(70vw, 280px)', height: 'min(70vw, 280px)' }}
+              >
+                {error ? (
+                  <>
+                    <span className="text-3xl mb-2">⚠️</span>
+                    <p className="text-sm text-rose-500 font-semibold">{error}</p>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-4xl mb-3">📱</span>
+                    <p className="text-sm font-semibold text-stone-400">왼쪽에 내용을 입력하면<br />QR 코드가 여기에 나타나요</p>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+          {ready && text && !error && (
+            <p className="mt-3 text-xs text-stone-400">스마트폰 카메라로 스캔해보세요 📷</p>
+          )}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 📄 App
+    // ========================================
+    function App() {
+      const [type, setType] = useState('text');
+      const [forms, setForms] = useState(() => {
+        const init = {};
+        Object.keys(CONTENT_TYPES).forEach((k) => { init[k] = { ...CONTENT_TYPES[k].initial }; });
+        return init;
+      });
+
+      // 커스터마이징
+      const [size, setSize] = useState(512);
+      const [fgColor, setFgColor] = useState('#1c1917'); // stone-900
+      const [bgColor, setBgColor] = useState('#ffffff');
+      const [ecLevel, setEcLevel] = useState('M');
+      const [logo, setLogo] = useState(null);
+
+      const canvasRef = useRef(null);
+      const fileInputRef = useRef(null);
+
+      const cfg = CONTENT_TYPES[type];
+      const data = forms[type];
+      const setData = useCallback((patch) => {
+        setForms((prev) => ({ ...prev, [type]: { ...prev[type], ...patch } }));
+      }, [type]);
+
+      const qrText = useMemo(() => cfg.build(data), [cfg, data]);
+
+      // 로고 사용 시 오류정정 H 권장
+      const onLogoSelect = (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setLogo(ev.target.result);
+          setEcLevel('H'); // 로고가 데이터를 가리므로 복원력 최대
+        };
+        reader.readAsDataURL(file);
+      };
+
+      const downloadPNG = () => {
+        const canvas = canvasRef.current;
+        if (!canvas || !qrText) return;
+        const url = canvas.toDataURL('image/png');
+        triggerDownload(url, 'qrcode.png');
+      };
+
+      const downloadSVG = () => {
+        if (!qrText || typeof window.QRCode === 'undefined') return;
+        window.QRCode.toString(
+          qrText,
+          {
+            type: 'svg',
+            margin: 2,
+            errorCorrectionLevel: ecLevel,
+            color: { dark: fgColor, light: bgColor },
+            width: size,
+          },
+          (err, svg) => {
+            if (err) return;
+            const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            triggerDownload(url, 'qrcode.svg');
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }
+        );
+      };
+
+      const triggerDownload = (url, filename) => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      };
+
+      const hasContent = !!qrText;
+      const FormComp = cfg.Form;
+
+      return (
+        <div className="min-h-screen px-4 py-6 sm:py-10">
+          <div className="max-w-5xl mx-auto">
+            {/* 헤더 */}
+            <header className="text-center mb-6">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-orange-500 to-rose-500 text-white text-3xl shadow-lg shadow-orange-200 mb-3">
+                ▦
+              </div>
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-stone-800">QR 코드 생성기</h1>
+              <p className="text-sm text-stone-500 mt-1">텍스트 · URL · Wi-Fi · 연락처를 QR 코드로 — 실시간 생성 & 다운로드</p>
+            </header>
+
+            <div className="grid gap-5 lg:grid-cols-2 items-start">
+              {/* 입력 패널 */}
+              <div className="space-y-5">
+                <Card>
+                  <h2 className="text-sm font-bold text-stone-500 mb-3">📂 콘텐츠 타입</h2>
+                  <SegmentedTabs
+                    tabs={Object.entries(CONTENT_TYPES).map(([k, v]) => ({ value: k, label: v.label }))}
+                    value={type}
+                    onChange={setType}
+                  />
+                  <div className="mt-4">
+                    <FormComp data={data} set={setData} />
+                  </div>
+                </Card>
+
+                <Card>
+                  <h2 className="text-sm font-bold text-stone-500 mb-4">🎨 커스터마이징</h2>
+
+                  <div className="flex gap-3 mb-4">
+                    <ColorPicker label="전경색 (점)" value={fgColor} onChange={setFgColor} />
+                    <ColorPicker label="배경색" value={bgColor} onChange={setBgColor} />
+                  </div>
+
+                  <Field label="크기" hint={`${size} px`}>
+                    <Slider value={size} min={128} max={1024} step={32} onChange={setSize} />
+                  </Field>
+
+                  <div className="mt-4">
+                    <Field label="오류 정정 레벨" hint="높을수록 손상에 강함">
+                      <SegmentedTabs
+                        tabs={[
+                          { value: 'L', label: 'L 7%' },
+                          { value: 'M', label: 'M 15%' },
+                          { value: 'Q', label: 'Q 25%' },
+                          { value: 'H', label: 'H 30%' },
+                        ]}
+                        value={ecLevel}
+                        onChange={setEcLevel}
+                      />
+                    </Field>
+                  </div>
+
+                  <div className="mt-4">
+                    <Field label="중앙 로고 (선택)" hint="권장: 정사각 PNG">
+                      <input ref={fileInputRef} type="file" accept="image/*" onChange={onLogoSelect} className="hidden" />
+                      <div className="flex gap-2">
+                        <Button variant="secondary" size="sm" onClick={() => fileInputRef.current && fileInputRef.current.click()} className="flex-1">
+                          {logo ? '🖼️ 로고 변경' : '🖼️ 로고 추가'}
+                        </Button>
+                        {logo && (
+                          <Button variant="danger" size="sm" onClick={() => { setLogo(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}>
+                            제거
+                          </Button>
+                        )}
+                      </div>
+                      {logo && <p className="text-xs text-stone-400 mt-1.5">로고 추가 시 오류 정정이 H로 설정됩니다.</p>}
+                    </Field>
+                  </div>
+                </Card>
+              </div>
+
+              {/* 미리보기 패널 */}
+              <div className="lg:sticky lg:top-10">
+                <Card>
+                  <h2 className="text-sm font-bold text-stone-500 mb-4 text-center">👀 미리보기</h2>
+                  <QrPreview
+                    text={qrText}
+                    size={size}
+                    fgColor={fgColor}
+                    bgColor={bgColor}
+                    ecLevel={ecLevel}
+                    logo={logo}
+                    canvasRef={canvasRef}
+                  />
+                  <div className="grid grid-cols-2 gap-2 mt-6">
+                    <Button variant="primary" size="md" disabled={!hasContent} onClick={downloadPNG}>
+                      ⬇️ PNG
+                    </Button>
+                    <Button variant="secondary" size="md" disabled={!hasContent} onClick={downloadSVG}>
+                      ⬇️ SVG
+                    </Button>
+                  </div>
+                  {!hasContent && (
+                    <p className="text-center text-xs text-stone-400 mt-3">내용을 입력하면 다운로드가 활성화됩니다</p>
+                  )}
+                </Card>
+              </div>
+            </div>
+
+            <footer className="text-center text-xs text-stone-400 mt-8">
+              QR 코드 생성기 · qrcode.js 기반 · 입력값은 브라우저에서만 처리됩니다 🔒
+            </footer>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 Render
+    // ========================================
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

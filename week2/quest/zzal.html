@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>짤 생성기 · 밈 메이커</title>
+  <!-- ⚠️ 모든 CDN은 버전 고정. Babel 은 반드시 7.x (8.x 미지원) -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.25.9/babel.min.js"></script>
+  <style>
+    /* Tailwind 으로 처리 불가능한 부분만 */
+    @keyframes pop {
+      0% { transform: scale(0.96); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .animate-pop { animation: pop 0.25s ease-out; }
+
+    /* range slider (orange 톤) */
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      height: 8px; border-radius: 9999px;
+      background: #fed7aa; /* orange-200 */
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 22px; height: 22px; border-radius: 9999px;
+      background: #f97316; /* orange-500 */
+      border: 3px solid #fff;
+      box-shadow: 0 2px 6px rgba(249,115,22,0.4);
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px; height: 18px; border-radius: 9999px;
+      background: #f97316; border: 3px solid #fff; cursor: pointer;
+    }
+
+    /* color input 동그랗게 */
+    input[type="color"] {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 42px; padding: 0;
+      border: none; border-radius: 14px; cursor: pointer; background: transparent;
+    }
+    input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+    input[type="color"]::-webkit-color-swatch { border: 2px solid #fff; border-radius: 14px; }
+    input[type="color"]::-moz-color-swatch { border: 2px solid #fff; border-radius: 14px; }
+  </style>
+</head>
+<body class="bg-orange-50">
+  <div id="root"></div>
+  <script type="text/babel">
+    // ========================================
+    // React Hooks
+    // ========================================
+    const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+    // ========================================
+    // 🎨 Design System Components
+    // ========================================
+    function Card({ children, className = '' }) {
+      return (
+        <div className={`bg-white rounded-3xl shadow-lg shadow-orange-100/60 p-5 sm:p-6 ${className}`}>
+          {children}
+        </div>
+      );
+    }
+
+    function Button({ children, variant = 'primary', size = 'md', disabled = false, onClick, className = '', ...props }) {
+      const base = 'inline-flex items-center justify-center gap-1.5 font-bold rounded-2xl transition-all active:scale-95 focus:outline-none focus:ring-4 disabled:opacity-40 disabled:active:scale-100 disabled:cursor-not-allowed';
+      const variants = {
+        primary: 'bg-orange-500 text-white hover:bg-orange-600 focus:ring-orange-200 shadow-md shadow-orange-200',
+        secondary: 'bg-orange-100 text-orange-700 hover:bg-orange-200 focus:ring-orange-100',
+        ghost: 'bg-transparent text-orange-600 hover:bg-orange-50 focus:ring-orange-100',
+        danger: 'bg-rose-100 text-rose-600 hover:bg-rose-200 focus:ring-rose-100',
+      };
+      const sizes = {
+        sm: 'px-3 py-1.5 text-sm',
+        md: 'px-4 py-2.5 text-base',
+        lg: 'px-5 py-3.5 text-lg',
+        icon: 'w-11 h-11 text-xl',
+      };
+      return (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onClick}
+          className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
+          {...props}
+        >
+          {children}
+        </button>
+      );
+    }
+
+    function Toggle({ label, checked, onChange }) {
+      return (
+        <button
+          type="button"
+          onClick={() => onChange(!checked)}
+          className="flex items-center justify-between w-full"
+          aria-pressed={checked}
+        >
+          <span className="text-sm font-semibold text-stone-600">{label}</span>
+          <span className={`relative inline-flex w-12 h-7 rounded-full transition-colors ${checked ? 'bg-orange-500' : 'bg-stone-300'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : ''}`} />
+          </span>
+        </button>
+      );
+    }
+
+    function Field({ label, hint, children }) {
+      return (
+        <div>
+          <div className="flex items-baseline justify-between mb-1.5">
+            <label className="text-sm font-semibold text-stone-600">{label}</label>
+            {hint && <span className="text-xs text-stone-400">{hint}</span>}
+          </div>
+          {children}
+        </div>
+      );
+    }
+
+    function Slider({ value, min, max, step = 1, onChange }) {
+      return (
+        <input
+          type="range"
+          min={min} max={max} step={step} value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="w-full"
+        />
+      );
+    }
+
+    function ColorPicker({ label, value, onChange }) {
+      return (
+        <div className="flex-1">
+          <label className="block text-xs font-semibold text-stone-500 mb-1">{label}</label>
+          <div className="rounded-2xl ring-1 ring-stone-200 p-1 bg-stone-50">
+            <input type="color" value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} />
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🖼️ Canvas 합성 로직
+    //    이미지 + 여러 텍스트 박스를 캔버스에 렌더링
+    // ========================================
+    // 텍스트 줄바꿈(wrap): 캔버스 폭에 맞춰 단어/글자 단위로 줄을 나눔.
+    // 한글은 공백 없이 길게 이어지는 경우가 많아 글자 단위 fallback 처리.
+    function wrapText(ctx, text, maxWidth) {
+      const rawLines = text.split('\n');
+      const lines = [];
+      rawLines.forEach((raw) => {
+        if (raw === '') { lines.push(''); return; }
+        const words = raw.split(' ');
+        let current = '';
+        words.forEach((word) => {
+          const tentative = current === '' ? word : current + ' ' + word;
+          if (ctx.measureText(tentative).width <= maxWidth || current === '') {
+            // 한 단어 자체가 너무 길면 글자 단위로 쪼갬
+            if (ctx.measureText(tentative).width > maxWidth && current === '') {
+              let chunk = '';
+              for (const ch of tentative) {
+                if (ctx.measureText(chunk + ch).width > maxWidth && chunk !== '') {
+                  lines.push(chunk);
+                  chunk = ch;
+                } else {
+                  chunk += ch;
+                }
+              }
+              current = chunk;
+            } else {
+              current = tentative;
+            }
+          } else {
+            lines.push(current);
+            current = word;
+          }
+        });
+        lines.push(current);
+      });
+      return lines;
+    }
+
+    // 하나의 텍스트 박스를 캔버스에 그림
+    function drawTextBox(ctx, box, canvasW, canvasH, fontFamily) {
+      if (!box.text) return;
+      const text = box.upper ? box.text.toUpperCase() : box.text;
+      const weight = box.bold ? '900' : '600';
+      const fontStyle = box.italic ? 'italic' : 'normal';
+      ctx.font = `${fontStyle} ${weight} ${box.fontSize}px ${fontFamily}`;
+      ctx.textAlign = box.align || 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.miterLimit = 2;
+
+      const maxWidth = canvasW * 0.92;
+      const lines = wrapText(ctx, text, maxWidth);
+      const lineHeight = box.fontSize * 1.15;
+      const totalH = lines.length * lineHeight;
+
+      // box.x, box.y 는 0~1 비율 (텍스트 블록 중심)
+      const cx = box.x * canvasW;
+      let cy = box.y * canvasH - totalH / 2 + lineHeight / 2;
+
+      lines.forEach((line) => {
+        if (box.strokeWidth > 0) {
+          ctx.lineWidth = box.strokeWidth;
+          ctx.strokeStyle = box.strokeColor;
+          ctx.strokeText(line, cx, cy);
+        }
+        ctx.fillStyle = box.fillColor;
+        ctx.fillText(line, cx, cy);
+        cy += lineHeight;
+      });
+    }
+
+    // 캔버스 전체를 다시 그림
+    function renderMeme(canvas, img, bgColor, boxes, fontFamily) {
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+
+      // 캔버스 해상도 결정: 이미지가 있으면 그 크기, 없으면 4:3 기본
+      let W, H;
+      if (img) {
+        // 너무 큰 이미지는 다운스케일 (최대 1200px)
+        const maxDim = 1200;
+        const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+        W = Math.round(img.naturalWidth * scale);
+        H = Math.round(img.naturalHeight * scale);
+      } else {
+        W = 800; H = 600;
+      }
+      canvas.width = W;
+      canvas.height = H;
+
+      // 배경
+      ctx.fillStyle = bgColor || '#1f2937';
+      ctx.fillRect(0, 0, W, H);
+
+      if (img) {
+        ctx.drawImage(img, 0, 0, W, H);
+      } else {
+        // placeholder 안내 텍스트
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = `600 ${Math.round(W * 0.035)}px ${fontFamily}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('이미지를 업로드하거나 배경색을 골라주세요', W / 2, H / 2);
+      }
+
+      boxes.forEach((box) => drawTextBox(ctx, box, W, H, fontFamily));
+    }
+
+    // ========================================
+    // 🧩 텍스트 박스 편집 카드
+    // ========================================
+    function TextBoxEditor({ box, index, onChange, onRemove, canRemove }) {
+      const set = (patch) => onChange({ ...box, ...patch });
+      return (
+        <div className="rounded-2xl bg-orange-50/70 ring-1 ring-orange-100 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-extrabold text-orange-700">텍스트 #{index + 1}</span>
+            {canRemove && (
+              <Button variant="danger" size="sm" onClick={onRemove}>삭제</Button>
+            )}
+          </div>
+
+          <textarea
+            value={box.text}
+            onChange={(e) => set({ text: e.target.value })}
+            placeholder="문구를 입력하세요 (Enter 로 줄바꿈)"
+            rows={2}
+            className="w-full rounded-xl ring-1 ring-stone-200 focus:ring-2 focus:ring-orange-300 outline-none p-3 text-sm resize-none bg-white"
+          />
+
+          <Field label="글자 크기" hint={`${box.fontSize}px`}>
+            <Slider value={box.fontSize} min={16} max={140} onChange={(v) => set({ fontSize: v })} />
+          </Field>
+
+          <Field label="외곽선 두께" hint={`${box.strokeWidth}px`}>
+            <Slider value={box.strokeWidth} min={0} max={20} onChange={(v) => set({ strokeWidth: v })} />
+          </Field>
+
+          <div className="flex gap-3">
+            <ColorPicker label="글자색" value={box.fillColor} onChange={(v) => set({ fillColor: v })} />
+            <ColorPicker label="외곽선색" value={box.strokeColor} onChange={(v) => set({ strokeColor: v })} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="rounded-xl bg-white ring-1 ring-stone-200 px-3 py-2">
+              <Toggle label="굵게" checked={box.bold} onChange={(v) => set({ bold: v })} />
+            </div>
+            <div className="rounded-xl bg-white ring-1 ring-stone-200 px-3 py-2">
+              <Toggle label="대문자" checked={box.upper} onChange={(v) => set({ upper: v })} />
+            </div>
+            <div className="rounded-xl bg-white ring-1 ring-stone-200 px-3 py-2">
+              <Toggle label="기울임" checked={box.italic} onChange={(v) => set({ italic: v })} />
+            </div>
+            <div className="rounded-xl bg-white ring-1 ring-stone-200 px-3 py-2 flex items-center gap-1">
+              {['left','center','right'].map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  onClick={() => set({ align: a })}
+                  className={`flex-1 rounded-lg py-1 text-xs font-bold transition ${box.align === a ? 'bg-orange-500 text-white' : 'text-stone-500 hover:bg-orange-50'}`}
+                  aria-label={`정렬 ${a}`}
+                >
+                  {a === 'left' ? '◧' : a === 'center' ? '▣' : '◨'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 App
+    // ========================================
+    const FONT_FAMILY = "'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', 'Segoe UI', sans-serif";
+
+    let nextId = 2;
+    function makeBox(text, y) {
+      return {
+        id: nextId++,
+        text,
+        x: 0.5,
+        y,
+        fontSize: 64,
+        fillColor: '#ffffff',
+        strokeColor: '#000000',
+        strokeWidth: 8,
+        bold: true,
+        italic: false,
+        upper: false,
+        align: 'center',
+      };
+    }
+
+    function App() {
+      const canvasRef = useRef(null);
+      const fileInputRef = useRef(null);
+      const previewWrapRef = useRef(null);
+      const draggingRef = useRef(null); // { id }
+
+      const [img, setImg] = useState(null);
+      const [imgError, setImgError] = useState('');
+      const [bgColor, setBgColor] = useState('#1f2937');
+      const [dragOver, setDragOver] = useState(false);
+
+      const [boxes, setBoxes] = useState([
+        { id: 0, text: '위쪽 문구', x: 0.5, y: 0.12, fontSize: 64, fillColor: '#ffffff', strokeColor: '#000000', strokeWidth: 8, bold: true, italic: false, upper: false, align: 'center' },
+        { id: 1, text: '아래쪽 문구', x: 0.5, y: 0.88, fontSize: 64, fillColor: '#ffffff', strokeColor: '#000000', strokeWidth: 8, bold: true, italic: false, upper: false, align: 'center' },
+      ]);
+
+      // 이미지 로드 (File -> Image)
+      const loadFile = useCallback((file) => {
+        if (!file) return;
+        if (!file.type.startsWith('image/')) {
+          setImgError('이미지 파일만 업로드할 수 있어요.');
+          return;
+        }
+        setImgError('');
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const image = new Image();
+          image.onload = () => setImg(image);
+          image.onerror = () => setImgError('이미지를 불러오지 못했어요.');
+          image.src = e.target.result; // dataURL -> tainted 되지 않음
+        };
+        reader.readAsDataURL(file);
+      }, []);
+
+      const onFileChange = (e) => loadFile(e.target.files[0]);
+
+      const onDrop = (e) => {
+        e.preventDefault();
+        setDragOver(false);
+        loadFile(e.dataTransfer.files[0]);
+      };
+
+      // 실시간 렌더
+      useEffect(() => {
+        renderMeme(canvasRef.current, img, bgColor, boxes, FONT_FAMILY);
+      }, [img, bgColor, boxes]);
+
+      // 박스 조작
+      const updateBox = (id, newBox) => setBoxes((bs) => bs.map((b) => (b.id === id ? newBox : b)));
+      const removeBox = (id) => setBoxes((bs) => bs.filter((b) => b.id !== id));
+      const addBox = () => setBoxes((bs) => [...bs, makeBox('새 문구', 0.5)]);
+
+      // 미리보기에서 드래그로 텍스트 위치 이동
+      const pointerToRatio = (clientX, clientY) => {
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const x = (clientX - rect.left) / rect.width;
+        const y = (clientY - rect.top) / rect.height;
+        return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+      };
+
+      const onPreviewPointerDown = (e) => {
+        const { x, y } = pointerToRatio(e.clientX, e.clientY);
+        // 가장 가까운 박스를 잡음
+        let best = null, bestDist = Infinity;
+        boxes.forEach((b) => {
+          const d = Math.hypot(b.x - x, b.y - y);
+          if (d < bestDist) { bestDist = d; best = b; }
+        });
+        if (best && bestDist < 0.35) {
+          draggingRef.current = { id: best.id };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+      };
+
+      const onPreviewPointerMove = (e) => {
+        if (!draggingRef.current) return;
+        const { x, y } = pointerToRatio(e.clientX, e.clientY);
+        setBoxes((bs) => bs.map((b) => (b.id === draggingRef.current.id ? { ...b, x, y } : b)));
+      };
+
+      const onPreviewPointerUp = (e) => {
+        if (draggingRef.current) {
+          try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {}
+        }
+        draggingRef.current = null;
+      };
+
+      // 다운로드
+      const download = () => {
+        const canvas = canvasRef.current;
+        try {
+          const url = canvas.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `zzal_${Date.now()}.png`;
+          a.click();
+        } catch (err) {
+          setImgError('다운로드에 실패했어요. 외부 URL 이미지는 보안 정책으로 저장이 막힐 수 있어요. 로컬 파일을 업로드해 주세요.');
+        }
+      };
+
+      const clearAll = () => {
+        setImg(null);
+        setImgError('');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      };
+
+      const PRESET_BG = ['#1f2937', '#000000', '#ffffff', '#f97316', '#fb7185', '#10b981', '#3b82f6'];
+
+      return (
+        <div className="min-h-screen px-4 py-6 sm:py-10">
+          <div className="max-w-5xl mx-auto">
+            {/* 헤더 */}
+            <header className="text-center mb-6">
+              <h1 className="text-3xl sm:text-4xl font-extrabold text-stone-800">
+                🖼️ 짤 생성기
+              </h1>
+              <p className="text-stone-500 mt-1.5 text-sm sm:text-base">
+                이미지 올리고 문구 넣어서 나만의 밈 만들기
+              </p>
+            </header>
+
+            <div className="grid lg:grid-cols-5 gap-5 items-start">
+              {/* ===== 미리보기 (캔버스) ===== */}
+              <div className="lg:col-span-3 lg:order-2 lg:sticky lg:top-6">
+                <Card>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="font-extrabold text-stone-700">👀 미리보기</h2>
+                    <span className="text-xs text-stone-400">문구를 드래그하면 위치 이동</span>
+                  </div>
+
+                  <div
+                    ref={previewWrapRef}
+                    onDrop={onDrop}
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    className={`relative rounded-2xl overflow-hidden bg-stone-100 ring-2 transition-colors ${dragOver ? 'ring-orange-400 ring-dashed' : 'ring-stone-200'}`}
+                  >
+                    <canvas
+                      ref={canvasRef}
+                      onPointerDown={onPreviewPointerDown}
+                      onPointerMove={onPreviewPointerMove}
+                      onPointerUp={onPreviewPointerUp}
+                      className="w-full h-auto block touch-none cursor-move animate-pop"
+                    />
+                    {dragOver && (
+                      <div className="absolute inset-0 bg-orange-500/20 flex items-center justify-center pointer-events-none">
+                        <span className="bg-white/90 rounded-2xl px-4 py-2 font-bold text-orange-600 shadow">여기에 놓기 📥</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2.5 mt-4">
+                    <Button variant="secondary" size="md" className="flex-1" onClick={() => fileInputRef.current?.click()}>
+                      📁 이미지 선택
+                    </Button>
+                    <Button variant="primary" size="md" className="flex-1" onClick={download}>
+                      ⬇️ PNG 저장
+                    </Button>
+                  </div>
+                  {img && (
+                    <button onClick={clearAll} className="w-full text-center text-xs text-stone-400 hover:text-rose-500 mt-2.5 transition">
+                      이미지 제거
+                    </button>
+                  )}
+                </Card>
+              </div>
+
+              {/* ===== 편집 패널 ===== */}
+              <div className="lg:col-span-2 lg:order-1 space-y-5">
+                {/* 업로드 / 배경 */}
+                <Card>
+                  <h2 className="font-extrabold text-stone-700 mb-3">📤 이미지 / 배경</h2>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={onFileChange}
+                    className="hidden"
+                  />
+
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    onDrop={onDrop}
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    className={`cursor-pointer rounded-2xl border-2 border-dashed p-6 text-center transition-colors ${dragOver ? 'border-orange-400 bg-orange-50' : 'border-stone-300 hover:border-orange-300 hover:bg-orange-50/50'}`}
+                  >
+                    <div className="text-3xl mb-1">🖼️</div>
+                    <p className="text-sm font-semibold text-stone-600">클릭 또는 드래그&드롭</p>
+                    <p className="text-xs text-stone-400 mt-0.5">로컬 이미지 파일 (PNG / JPG / GIF…)</p>
+                  </div>
+
+                  {imgError && (
+                    <p className="text-xs text-rose-500 mt-2 font-semibold">{imgError}</p>
+                  )}
+
+                  <div className="mt-4">
+                    <p className="text-sm font-semibold text-stone-600 mb-2">이미지가 없을 때 배경색</p>
+                    <div className="flex flex-wrap gap-2">
+                      {PRESET_BG.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => setBgColor(c)}
+                          className={`w-8 h-8 rounded-full ring-2 transition ${bgColor === c ? 'ring-orange-500 scale-110' : 'ring-white'} shadow`}
+                          style={{ backgroundColor: c }}
+                          aria-label={`배경색 ${c}`}
+                        />
+                      ))}
+                      <label className="w-8 h-8 rounded-full overflow-hidden ring-2 ring-white shadow relative cursor-pointer">
+                        <input type="color" value={bgColor} onChange={(e) => setBgColor(e.target.value)} className="absolute inset-0 w-full h-full" aria-label="사용자 배경색" />
+                      </label>
+                    </div>
+                    {img && <p className="text-xs text-stone-400 mt-1.5">이미지가 있을 때는 배경색이 가려져요.</p>}
+                  </div>
+                </Card>
+
+                {/* 텍스트 박스들 */}
+                <Card>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="font-extrabold text-stone-700">✍️ 텍스트</h2>
+                    <Button variant="ghost" size="sm" onClick={addBox}>➕ 추가</Button>
+                  </div>
+
+                  <div className="space-y-4">
+                    {boxes.map((box, i) => (
+                      <TextBoxEditor
+                        key={box.id}
+                        box={box}
+                        index={i}
+                        onChange={(nb) => updateBox(box.id, nb)}
+                        onRemove={() => removeBox(box.id)}
+                        canRemove={boxes.length > 1}
+                      />
+                    ))}
+                    {boxes.length === 0 && (
+                      <p className="text-sm text-stone-400 text-center py-4">
+                        텍스트가 없어요. ➕ 추가를 눌러보세요.
+                      </p>
+                    )}
+                  </div>
+                </Card>
+              </div>
+            </div>
+
+            <footer className="text-center text-xs text-stone-400 mt-8 leading-relaxed">
+              <p>전형적인 임팩트 밈 스타일: 굵은 흰 글씨 + 검은 외곽선이 기본값이에요.</p>
+              <p className="mt-1">© 짤 생성기 · 로컬에서만 동작하며 이미지는 서버로 전송되지 않아요.</p>
+            </footer>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // Rendering
+    // ========================================
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
