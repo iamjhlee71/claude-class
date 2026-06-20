@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>오늘 날씨</title>
+
+  <!-- ⚠️ 모든 CDN은 버전 고정. @babel/standalone 은 반드시 7.x (8.x 는 text/babel 인라인 변환이 깨짐). -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.25.9/babel.min.js"></script>
+
+  <!-- Korean-friendly font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+  <style>
+    * { font-family: 'Noto Sans KR', system-ui, sans-serif; }
+    html, body, #root { min-height: 100%; }
+    body { margin: 0; }
+
+    /* 부드러운 진입 애니메이션 */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fadeUp { animation: fadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .animate-fadeIn { animation: fadeIn 0.4s ease both; }
+
+    /* 큰 날씨 아이콘 둥실 */
+    @keyframes floaty {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-12px); }
+    }
+    .animate-floaty { animation: floaty 4s ease-in-out infinite; }
+
+    /* 로딩 펄스 */
+    @keyframes softPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.55; transform: scale(0.92); }
+    }
+    .animate-softPulse { animation: softPulse 1.6s ease-in-out infinite; }
+
+    /* 스크롤바 살짝 */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.35); border-radius: 9999px; }
+
+    /* 시간별 가로 스크롤: 스크롤바 숨김(모바일 깔끔) */
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // ========================================
+    // React Hooks
+    // ========================================
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+    // ========================================
+    // 상수 / 헬퍼 (OpenWeatherMap)
+    // ========================================
+
+    // OpenWeatherMap API 키 (필요시 여기서 교체)
+    // ⚠️ 이 키는 클라이언트에 그대로 노출됩니다 (페이지 소스에서 보임).
+    const OWM_API_KEY = "1d5926b624ef458b103acdefc47d5cbc";
+
+    const OWM_BASE = "https://api.openweathermap.org";
+
+    // 한국 표준시(KST). 선택한 도시와 무관하게 모든 시각을 KST(UTC+9)로 표시한다.
+    const KST_OFFSET = 9 * 3600; // 32400s, 한국 표준시(KST)
+
+    // 서울 기본 좌표 (지오로케이션 거부/실패 시 폴백)
+    const SEOUL = { lat: 37.5665, lon: 126.9780, label: "서울특별시" };
+
+    // 한글 포함 여부 (한글 입력은 OWM 지오코딩이 엉뚱한 도시를 돌려주므로 사전으로만 검색)
+    const hasHangul = (s) => /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(s);
+
+    // ----- 한국어 도시 사전 -----
+    // OWM 의 geo/1.0/direct 는 한글 q 를 지원하지 않는다(예: "서울"→결과 없음, "부산"→오스트리아 Linz 반환).
+    // 따라서 한국어 도시명은 아래 사전에서 직접 매칭한다. 좌표는 정확하므로 변경 금지.
+    const KO_CITIES = [
+      // 대한민국
+      { ko: "서울", en: "Seoul", country: "대한민국", lat: 37.5665, lon: 126.9780 },
+      { ko: "부산", en: "Busan", country: "대한민국", lat: 35.1796, lon: 129.0756 },
+      { ko: "인천", en: "Incheon", country: "대한민국", lat: 37.4563, lon: 126.7052 },
+      { ko: "대구", en: "Daegu", country: "대한민국", lat: 35.8714, lon: 128.6014 },
+      { ko: "대전", en: "Daejeon", country: "대한민국", lat: 36.3504, lon: 127.3845 },
+      { ko: "광주", en: "Gwangju", country: "대한민국", lat: 35.1595, lon: 126.8526 },
+      { ko: "울산", en: "Ulsan", country: "대한민국", lat: 35.5384, lon: 129.3114 },
+      { ko: "세종", en: "Sejong", country: "대한민국", lat: 36.4801, lon: 127.2890 },
+      { ko: "수원", en: "Suwon", country: "대한민국", lat: 37.2636, lon: 127.0286 },
+      { ko: "제주", en: "Jeju", country: "대한민국", lat: 33.4996, lon: 126.5312, aliases: ["제주도", "제주시"] },
+      { ko: "서귀포", en: "Seogwipo", country: "대한민국", lat: 33.2541, lon: 126.5600 },
+      { ko: "춘천", en: "Chuncheon", country: "대한민국", lat: 37.8813, lon: 127.7300 },
+      { ko: "강릉", en: "Gangneung", country: "대한민국", lat: 37.7519, lon: 128.8761 },
+      { ko: "전주", en: "Jeonju", country: "대한민국", lat: 35.8242, lon: 127.1480 },
+      { ko: "청주", en: "Cheongju", country: "대한민국", lat: 36.6424, lon: 127.4890 },
+      { ko: "포항", en: "Pohang", country: "대한민국", lat: 36.0190, lon: 129.3435 },
+      { ko: "창원", en: "Changwon", country: "대한민국", lat: 35.2280, lon: 128.6811 },
+      { ko: "여수", en: "Yeosu", country: "대한민국", lat: 34.7604, lon: 127.6622 },
+      { ko: "경주", en: "Gyeongju", country: "대한민국", lat: 35.8562, lon: 129.2247 },
+      { ko: "안동", en: "Andong", country: "대한민국", lat: 36.5684, lon: 128.7294 },
+      { ko: "목포", en: "Mokpo", country: "대한민국", lat: 34.8118, lon: 126.3922 },
+      { ko: "속초", en: "Sokcho", country: "대한민국", lat: 38.2070, lon: 128.5918 },
+      // 세계 (한국어 이름)
+      { ko: "도쿄", en: "Tokyo", country: "일본", lat: 35.6762, lon: 139.6503 },
+      { ko: "오사카", en: "Osaka", country: "일본", lat: 34.6937, lon: 135.5023 },
+      { ko: "후쿠오카", en: "Fukuoka", country: "일본", lat: 33.5904, lon: 130.4017 },
+      { ko: "삿포로", en: "Sapporo", country: "일본", lat: 43.0618, lon: 141.3545 },
+      { ko: "베이징", en: "Beijing", country: "중국", lat: 39.9042, lon: 116.4074 },
+      { ko: "상하이", en: "Shanghai", country: "중국", lat: 31.2304, lon: 121.4737 },
+      { ko: "홍콩", en: "Hong Kong", country: "중국", lat: 22.3193, lon: 114.1694 },
+      { ko: "타이베이", en: "Taipei", country: "대만", lat: 25.0330, lon: 121.5654 },
+      { ko: "방콕", en: "Bangkok", country: "태국", lat: 13.7563, lon: 100.5018 },
+      { ko: "싱가포르", en: "Singapore", country: "싱가포르", lat: 1.3521, lon: 103.8198 },
+      { ko: "하노이", en: "Hanoi", country: "베트남", lat: 21.0278, lon: 105.8342 },
+      { ko: "두바이", en: "Dubai", country: "아랍에미리트", lat: 25.2048, lon: 55.2708 },
+      { ko: "뉴욕", en: "New York", country: "미국", lat: 40.7128, lon: -74.0060 },
+      { ko: "로스앤젤레스", en: "Los Angeles", country: "미국", lat: 34.0522, lon: -118.2437, aliases: ["엘에이", "LA"] },
+      { ko: "샌프란시스코", en: "San Francisco", country: "미국", lat: 37.7749, lon: -122.4194 },
+      { ko: "호놀룰루", en: "Honolulu", country: "미국", lat: 21.3069, lon: -157.8583, aliases: ["하와이"] },
+      { ko: "런던", en: "London", country: "영국", lat: 51.5074, lon: -0.1278 },
+      { ko: "파리", en: "Paris", country: "프랑스", lat: 48.8566, lon: 2.3522 },
+      { ko: "베를린", en: "Berlin", country: "독일", lat: 52.5200, lon: 13.4050 },
+      { ko: "로마", en: "Rome", country: "이탈리아", lat: 41.9028, lon: 12.4964 },
+      { ko: "바르셀로나", en: "Barcelona", country: "스페인", lat: 41.3851, lon: 2.1734 },
+      { ko: "시드니", en: "Sydney", country: "호주", lat: -33.8688, lon: 151.2093 },
+      { ko: "모스크바", en: "Moscow", country: "러시아", lat: 55.7558, lon: 37.6173 },
+    ];
+
+    // 사전에서 q(부분 일치, 대소문자 무시)로 검색 → 드롭다운/pick() 이 기대하는 모양으로 매핑
+    function searchKoCities(q) {
+      const needle = q.trim().toLowerCase();
+      if (!needle) return [];
+      return KO_CITIES
+        .filter((c) => {
+          const hay = [c.ko, c.en, ...(c.aliases || [])];
+          return hay.some((x) => x && x.toLowerCase().includes(needle));
+        })
+        .map((c) => ({
+          lat: c.lat,
+          lon: c.lon,
+          name: c.ko,
+          local_names: { ko: c.ko },
+          country: c.country,
+          _local: true,
+        }));
+    }
+
+    // OWM icon 코드(예: "10d" / "01n") -> { emoji, label, isDay }
+    // 접두 2자리로 날씨 그룹을, 접미 d/n 으로 주야를 판별.
+    // (OWM 의 raw description 은 "실 비" 처럼 띄어쓰기가 어색할 때가 있어 깔끔한 한글 라벨을 직접 매핑)
+    const OWM_ICON = {
+      "01d": { emoji: "☀️", label: "맑음" },
+      "01n": { emoji: "🌙", label: "맑음" },
+      "02d": { emoji: "🌤️", label: "구름 조금" },
+      "02n": { emoji: "☁️", label: "구름 조금" },
+      "03d": { emoji: "⛅", label: "구름 많음" },
+      "03n": { emoji: "⛅", label: "구름 많음" },
+      "04d": { emoji: "☁️", label: "흐림" },
+      "04n": { emoji: "☁️", label: "흐림" },
+      "09d": { emoji: "🌦️", label: "소나기" },
+      "09n": { emoji: "🌦️", label: "소나기" },
+      "10d": { emoji: "🌦️", label: "비" },
+      "10n": { emoji: "🌧️", label: "비" },
+      "11d": { emoji: "⛈️", label: "뇌우" },
+      "11n": { emoji: "⛈️", label: "뇌우" },
+      "13d": { emoji: "🌨️", label: "눈" },
+      "13n": { emoji: "🌨️", label: "눈" },
+      "50d": { emoji: "🌫️", label: "안개" },
+      "50n": { emoji: "🌫️", label: "안개" },
+    };
+
+    // OWM icon 코드 -> { emoji, label, isDay }
+    function owmVisual(iconCode) {
+      const code = typeof iconCode === "string" ? iconCode : "";
+      const isDay = code.endsWith("d");
+      const hit = OWM_ICON[code];
+      if (hit) return { emoji: hit.emoji, label: hit.label, isDay };
+      // 알 수 없는 코드 폴백
+      return { emoji: isDay ? "🌤️" : "🌙", label: "정보 없음", isDay };
+    }
+
+    // OWM icon 접두 그룹 + 주야로 배경 그라데이션 / 텍스트 톤 선택.
+    // (이전 WMO(weather_code, is_day) 선택 로직을 OWM 아이콘 기준으로 재구현)
+    function weatherTheme(iconCode) {
+      const code = typeof iconCode === "string" ? iconCode : "";
+      const prefix = code.slice(0, 2);
+      const isDay = code.endsWith("d");
+
+      const storm = prefix === "11";
+      const snow  = prefix === "13";
+      const rain  = prefix === "09" || prefix === "10";
+      const fog   = prefix === "50";
+      const cloud = prefix === "03" || prefix === "04";
+      const fewClouds = prefix === "02";
+      const clear = prefix === "01";
+
+      if (storm) {
+        // 뇌우: 거의 검정 / 어두움
+        return { gradient: "from-slate-800 via-slate-900 to-gray-950", accent: "text-slate-200" };
+      }
+      if (snow) {
+        // 눈: 낮은 옅은 하늘/흰색, 밤은 차분한 남청
+        return isDay
+          ? { gradient: "from-sky-200 via-slate-100 to-blue-100", accent: "text-slate-700", light: true }
+          : { gradient: "from-slate-700 via-slate-800 to-blue-950", accent: "text-slate-100" };
+      }
+      if (rain) {
+        // 비/소나기: 슬레이트-블루
+        return isDay
+          ? { gradient: "from-slate-500 via-slate-600 to-blue-800", accent: "text-slate-100" }
+          : { gradient: "from-slate-800 via-slate-900 to-blue-950", accent: "text-slate-200" };
+      }
+      if (fog) {
+        // 안개: 부드러운 회색
+        return isDay
+          ? { gradient: "from-slate-300 via-gray-300 to-slate-400", accent: "text-slate-700", light: true }
+          : { gradient: "from-slate-700 via-gray-800 to-slate-900", accent: "text-slate-200" };
+      }
+      if (cloud) {
+        // 흐림/구름 많음: 차분한 회청
+        return isDay
+          ? { gradient: "from-sky-400 via-slate-400 to-slate-500", accent: "text-white" }
+          : { gradient: "from-slate-700 via-slate-800 to-indigo-950", accent: "text-slate-100" };
+      }
+      if (fewClouds) {
+        // 구름 조금: 맑음과 흐림 사이
+        return isDay
+          ? { gradient: "from-sky-400 via-sky-300 to-slate-300", accent: "text-white" }
+          : { gradient: "from-indigo-900 via-slate-900 to-slate-950", accent: "text-indigo-100" };
+      }
+      // clear (기본) — 맑은 낮: 밝은 하늘→오렌지 / 맑은 밤: 깊은 인디고/네이비
+      return isDay
+        ? { gradient: "from-sky-400 via-sky-300 to-orange-200", accent: "text-white" }
+        : { gradient: "from-indigo-900 via-indigo-950 to-slate-950", accent: "text-indigo-100" };
+    }
+
+    // ----- 시간 / 숫자 포맷 -----
+
+    // OWM 타임스탬프는 Unix UTC. 도시의 오프셋(timezone, 초)을 더해
+    // 뷰어 자신의 타임존과 무관하게 "도시의 현지 시각"을 계산한다 (흔한 버그!).
+    // 반드시 getUTC* 사용 (오프셋을 이미 더했으므로).
+    function cityDate(unixUtcSeconds, tzOffsetSeconds) {
+      return new Date((unixUtcSeconds + (tzOffsetSeconds || 0)) * 1000);
+    }
+
+    // 일출/일몰 등 HH:MM
+    function toHM(unixUtcSeconds, tzOffsetSeconds) {
+      if (unixUtcSeconds === null || unixUtcSeconds === undefined) return "--:--";
+      const d = cityDate(unixUtcSeconds, tzOffsetSeconds);
+      const hh = String(d.getUTCHours()).padStart(2, "0");
+      const mm = String(d.getUTCMinutes()).padStart(2, "0");
+      return `${hh}:${mm}`;
+    }
+
+    // 예보 칸 라벨: 같은 날이면 "15시", 날이 넘어가면 "M/D HH시"
+    function forecastLabel(unixUtcSeconds, tzOffsetSeconds, refUnixSeconds) {
+      const d = cityDate(unixUtcSeconds, tzOffsetSeconds);
+      const ref = cityDate(refUnixSeconds, tzOffsetSeconds);
+      const sameDay =
+        d.getUTCFullYear() === ref.getUTCFullYear() &&
+        d.getUTCMonth() === ref.getUTCMonth() &&
+        d.getUTCDate() === ref.getUTCDate();
+      const hh = d.getUTCHours();
+      if (sameDay) return `${hh}시`;
+      return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${hh}시`;
+    }
+
+    // 도시 현지 기준 "YYYY-M-D" 키 (오늘 비교용)
+    function cityDayKey(unixUtcSeconds, tzOffsetSeconds) {
+      const d = cityDate(unixUtcSeconds, tzOffsetSeconds);
+      return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+    }
+
+    function round(n) {
+      return (n === null || n === undefined || Number.isNaN(n)) ? "--" : Math.round(n);
+    }
+
+    // 오늘 날짜 한국어: "6월 20일 토요일" — 뷰어 머신 타임존과 무관하게 항상 KST 기준.
+    // (UTC 시각에 KST 오프셋을 더한 뒤 getUTC* 로 읽는다.)
+    function koreanToday() {
+      const now = new Date();
+      const kst = new Date(now.getTime() + now.getTimezoneOffset() * 60000 + KST_OFFSET * 1000);
+      const days = ["일요일","월요일","화요일","수요일","목요일","금요일","토요일"];
+      return `${kst.getUTCMonth() + 1}월 ${kst.getUTCDate()}일 ${days[kst.getUTCDay()]}`;
+    }
+
+    // ========================================
+    // 🎨 디자인 시스템 (프레젠테이션 전용)
+    // ========================================
+
+    // 글래스모피즘 카드
+    function GlassCard({ className = "", children }) {
+      return (
+        <div className={
+          "bg-white/15 backdrop-blur-md border border-white/25 rounded-2xl " +
+          "shadow-lg shadow-black/10 " + className
+        }>
+          {children}
+        </div>
+      );
+    }
+
+    // 디테일 항목 (라벨 + 값)
+    function DetailItem({ icon, label, value, sub }) {
+      return (
+        <GlassCard className="p-4 flex flex-col items-center justify-center text-center min-h-[96px]">
+          <div className="text-xl mb-1" aria-hidden="true">{icon}</div>
+          <div className="text-[11px] sm:text-xs opacity-80 mb-0.5">{label}</div>
+          <div className="text-base sm:text-lg font-bold leading-tight">{value}</div>
+          {sub && <div className="text-[11px] opacity-75 mt-0.5">{sub}</div>}
+        </GlassCard>
+      );
+    }
+
+    function Spinner({ className = "" }) {
+      return (
+        <svg className={"animate-spin " + className} viewBox="0 0 24 24" fill="none" width="20" height="20">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+          <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+      );
+    }
+
+    // ========================================
+    // 🔎 도시 검색 (OWM 지오코딩 + 드롭다운)
+    // ========================================
+    function CitySearch({ onSelect, currentLabel }) {
+      const [query, setQuery] = useState("");
+      const [results, setResults] = useState([]);
+      const [open, setOpen] = useState(false);
+      const [searching, setSearching] = useState(false);
+      const [noMatch, setNoMatch] = useState(false);
+      const boxRef = useRef(null);
+      const debounceRef = useRef(null);
+
+      // 바깥 클릭 시 드롭다운 닫기
+      useEffect(() => {
+        function onDocClick(e) {
+          if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+        }
+        document.addEventListener("mousedown", onDocClick);
+        return () => document.removeEventListener("mousedown", onDocClick);
+      }, []);
+
+      // 디바운스 하이브리드 검색
+      // - 한글 입력  : OWM 지오코딩이 엉뚱한 도시를 반환하므로 호출하지 않고 사전만 사용.
+      // - 영문 입력  : OWM geo/1.0/direct 호출 + 사전 영문(en) 매칭을 합치고 좌표로 중복 제거.
+      useEffect(() => {
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        const q = query.trim();
+        if (q.length < 1) {
+          setResults([]); setNoMatch(false); setSearching(false);
+          return;
+        }
+        setSearching(true);
+        debounceRef.current = setTimeout(async () => {
+          // 1) 항상 먼저 로컬 사전 매칭
+          const localMatches = searchKoCities(q);
+
+          // 2) 한글이면 OWM 우회 — 사전 결과만 사용
+          if (hasHangul(q)) {
+            setResults(localMatches);
+            setNoMatch(localMatches.length === 0);
+            setOpen(true);
+            setSearching(false);
+            return;
+          }
+
+          // 3) 영문/ASCII → OWM 호출 후 사전(en) 결과와 병합 (사전 먼저), 좌표로 중복 제거
+          let owmList = [];
+          try {
+            const url =
+              `${OWM_BASE}/geo/1.0/direct?q=${encodeURIComponent(q)}` +
+              `&limit=5&appid=${OWM_API_KEY}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error("geocode http " + res.status);
+            const json = await res.json();
+            owmList = Array.isArray(json) ? json : [];
+          } catch (err) {
+            owmList = []; // OWM 실패해도 사전 결과는 보여준다
+          }
+
+          const merged = [];
+          const seen = new Set();
+          for (const r of [...localMatches, ...owmList]) {
+            if (r.lat === undefined || r.lon === undefined) continue;
+            const key = r.lat.toFixed(2) + "," + r.lon.toFixed(2);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(r);
+          }
+
+          setResults(merged);
+          setNoMatch(merged.length === 0);
+          setOpen(true);
+          setSearching(false);
+        }, 350);
+        return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+      }, [query]);
+
+      function pick(r) {
+        // 한국어 이름 우선
+        const ko = (r.local_names && r.local_names.ko) || r.name;
+        const sub = [r.state, r.country].filter(Boolean).join(", ");
+        const label = sub && sub !== ko ? `${ko}, ${r.state || r.country}` : ko;
+        onSelect({ lat: r.lat, lon: r.lon, label });
+        setQuery(""); setResults([]); setOpen(false); setNoMatch(false);
+      }
+
+      return (
+        <div ref={boxRef} className="relative w-full">
+          <div className="flex items-center gap-2 bg-white/20 backdrop-blur-md border border-white/30 rounded-full px-4 py-2.5 shadow-md focus-within:bg-white/25 transition">
+            <span aria-hidden="true" className="text-base">🔍</span>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => { if (results.length || noMatch) setOpen(true); }}
+              placeholder="도시 검색 (예: 부산, 제주, 도쿄)"
+              aria-label="도시 검색"
+              className="flex-1 bg-transparent outline-none text-sm sm:text-base placeholder-white/60 text-white"
+            />
+            {searching && <Spinner className="text-white/80" />}
+          </div>
+
+          {open && (results.length > 0 || noMatch) && (
+            <div className="absolute z-20 mt-2 w-full bg-white/90 backdrop-blur-lg rounded-2xl shadow-xl border border-white/40 overflow-hidden animate-fadeIn">
+              {noMatch ? (
+                <div className="px-4 py-3 text-sm text-slate-500">검색 결과가 없어요.</div>
+              ) : (
+                <ul role="listbox">
+                  {results.map((r, i) => {
+                    const ko = (r.local_names && r.local_names.ko) || r.name;
+                    return (
+                      <li key={`${r.lat},${r.lon}-${i}`}>
+                        <button
+                          type="button"
+                          onClick={() => pick(r)}
+                          className="w-full text-left px-4 py-3 hover:bg-sky-100/80 transition flex items-center gap-2"
+                        >
+                          <span aria-hidden="true">📍</span>
+                          <span className="text-slate-800 text-sm">
+                            <span className="font-semibold">{ko}</span>
+                            <span className="text-slate-500">
+                              {[r.state, r.country].filter(Boolean).map((x) => " · " + x).join("")}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+          {currentLabel && (
+            <div className="mt-2 text-center text-xs text-white/70">
+              현재 표시 중: {currentLabel}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🧩 화면 컴포넌트 (로딩 / 에러 / 본문)
+    // ========================================
+
+    function LoadingView() {
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-sky-400 via-sky-500 to-indigo-700 flex flex-col items-center justify-center text-white px-6">
+          <div className="text-7xl animate-softPulse" aria-hidden="true">🌤️</div>
+          <p className="mt-6 text-lg font-medium animate-fadeIn">날씨 정보를 불러오는 중...</p>
+        </div>
+      );
+    }
+
+    function ErrorView({ message, onRetry }) {
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-slate-600 via-slate-700 to-slate-900 flex flex-col items-center justify-center text-white px-6 text-center">
+          <div className="text-6xl mb-4" aria-hidden="true">🌧️</div>
+          <h2 className="text-xl font-bold mb-2">날씨를 불러오지 못했어요</h2>
+          <p className="text-white/80 mb-6 max-w-xs text-sm">{message || "네트워크 상태를 확인한 뒤 다시 시도해 주세요."}</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-6 py-3 rounded-full bg-white text-slate-800 font-bold shadow-lg hover:bg-slate-100 active:scale-95 transition"
+          >
+            다시 시도
+          </button>
+        </div>
+      );
+    }
+
+    // 시간별 한 칸
+    function HourCell({ hourLabel, icon, temp, pop, now }) {
+      return (
+        <div className={
+          "flex flex-col items-center gap-1 px-3 py-3 rounded-2xl min-w-[64px] " +
+          (now ? "bg-white/25 border border-white/40" : "bg-white/10 border border-white/15")
+        }>
+          <div className="text-xs opacity-85">{now ? "곧" : hourLabel}</div>
+          <div className="text-2xl" aria-hidden="true">{icon}</div>
+          <div className="text-sm font-bold">{round(temp)}°</div>
+          {pop > 0 && <div className="text-[10px] opacity-80">💧{Math.round(pop * 100)}%</div>}
+        </div>
+      );
+    }
+
+    // 메인 날씨 본문
+    // data = { current, forecast } (OWM 원본 응답)
+    function WeatherView({ data, label, usedFallback, onSelectCity }) {
+      const cur = data.current;
+      const forecast = data.forecast;
+
+      // 모든 시각을 한국 표준시(KST)로 표시 — 도시의 timezone 은 무시한다.
+      // 이 한 줄이 toHM(일출/일몰), forecastLabel(예보 라벨), cityDayKey(오늘 최고/최저·강수확률)
+      // 전부에 적용된다(아래 호출부가 모두 이 tz 를 사용).
+      const tz = KST_OFFSET; // 32400s (UTC+9)
+      const iconCode = (cur.weather && cur.weather[0] && cur.weather[0].icon) || "01d";
+      const { emoji, label: condLabel, isDay } = owmVisual(iconCode);
+      const apiDesc = (cur.weather && cur.weather[0] && cur.weather[0].description) || "";
+      const theme = weatherTheme(iconCode);
+      const textTone = theme.light ? "text-slate-800" : "text-white";
+
+      // 예보 리스트
+      const list = (forecast && Array.isArray(forecast.list)) ? forecast.list : [];
+
+      // 오늘(도시 현지)의 최고/최저 + 강수확률 — current 의 temp_min/max 는 신뢰 불가하므로 forecast 에서 산출.
+      const todayStats = useMemo(() => {
+        const nowSec = cur.dt;
+        const todayKey = cityDayKey(nowSec, tz);
+        let hi = -Infinity, lo = Infinity, pop = 0;
+        let todayCount = 0;
+        for (const e of list) {
+          if (cityDayKey(e.dt, tz) !== todayKey) continue;
+          todayCount++;
+          if (typeof e.main?.temp === "number") {
+            hi = Math.max(hi, e.main.temp);
+            lo = Math.min(lo, e.main.temp);
+          }
+          if (typeof e.pop === "number") pop = Math.max(pop, e.pop);
+        }
+        // 오늘 예보가 없으면(밤 늦게) 가장 가까운 다가오는 항목으로 강수확률 폴백
+        if (todayCount === 0) {
+          const upcoming = list.find((e) => e.dt >= nowSec) || list[0];
+          if (upcoming && typeof upcoming.pop === "number") pop = upcoming.pop;
+        }
+        // 현재 기온도 후보에 포함(예보 경계 보정)
+        if (typeof cur.main?.temp === "number") {
+          hi = Math.max(hi, cur.main.temp);
+          lo = Math.min(lo, cur.main.temp);
+        }
+        if (!Number.isFinite(hi)) hi = cur.main?.temp;
+        if (!Number.isFinite(lo)) lo = cur.main?.temp;
+        return { hi, lo, pop };
+      }, [list, cur, tz]);
+
+      // 시간별(3시간 간격): 지금 이후 ~8개 (~24h)
+      const hourly = useMemo(() => {
+        const nowSec = cur.dt;
+        const out = [];
+        for (const e of list) {
+          if (e.dt < nowSec - 30 * 60) continue; // 현재 직전 칸까지는 허용
+          out.push(e);
+          if (out.length >= 8) break;
+        }
+        return out;
+      }, [list, cur]);
+
+      return (
+        <div className={"min-h-screen bg-gradient-to-b " + theme.gradient + " " + textTone + " transition-colors duration-700"}>
+          <div className="max-w-xl mx-auto px-4 py-6 sm:py-8">
+
+            {/* 검색 */}
+            <div className="animate-fadeUp" style={{ animationDelay: "0.02s" }}>
+              <CitySearch onSelect={onSelectCity} currentLabel={null} />
+            </div>
+
+            {/* Hero */}
+            <header className="mt-7 text-center animate-fadeUp" style={{ animationDelay: "0.08s" }}>
+              <div className="flex items-center justify-center gap-1.5 text-base sm:text-lg font-medium opacity-95">
+                <span aria-hidden="true">📍</span>
+                <span>{label}</span>
+              </div>
+              <div className="text-sm opacity-80 mt-0.5">{koreanToday()}</div>
+              {usedFallback && (
+                <div className="mt-1 text-[11px] opacity-70">
+                  위치 권한이 없어 서울 날씨로 표시했어요.
+                </div>
+              )}
+
+              <div className="text-8xl sm:text-9xl my-3 animate-floaty leading-none" aria-hidden="true">
+                {emoji}
+              </div>
+
+              <div className="flex items-start justify-center">
+                <span className="text-7xl sm:text-8xl font-black tracking-tight leading-none">
+                  {round(cur.main?.temp)}
+                </span>
+                <span className="text-4xl sm:text-5xl font-bold mt-1">°</span>
+              </div>
+
+              <div className="text-xl sm:text-2xl font-semibold mt-1">{condLabel}</div>
+              <div className="text-sm sm:text-base opacity-85 mt-1">
+                체감 {round(cur.main?.feels_like)}°
+                {apiDesc && condLabel !== apiDesc && (
+                  <span className="opacity-70"> · {apiDesc}</span>
+                )}
+              </div>
+            </header>
+
+            {/* 디테일 카드 행 */}
+            <section
+              className="mt-7 grid grid-cols-2 sm:grid-cols-3 gap-3 animate-fadeUp"
+              style={{ animationDelay: "0.16s" }}
+              aria-label="오늘의 상세 정보"
+            >
+              <DetailItem icon="💧" label="습도" value={`${round(cur.main?.humidity)}%`} />
+              <DetailItem icon="🌬️" label="바람" value={`${(cur.wind?.speed ?? 0).toFixed(1)}m/s`} />
+              <DetailItem
+                icon="🌡️"
+                label="최고 / 최저"
+                value={`${round(todayStats.hi)}° / ${round(todayStats.lo)}°`}
+              />
+              <DetailItem icon="☔" label="강수확률" value={`${Math.round((todayStats.pop || 0) * 100)}%`} />
+              <DetailItem icon="🌅" label="일출" value={toHM(cur.sys?.sunrise, tz)} />
+              <DetailItem icon="🌇" label="일몰" value={toHM(cur.sys?.sunset, tz)} />
+            </section>
+
+            {/* 시간별 예보 (3시간 간격) */}
+            <section className="mt-7 animate-fadeUp" style={{ animationDelay: "0.24s" }} aria-label="시간별 예보">
+              <h2 className="text-sm font-semibold opacity-90 mb-2 px-1">
+                시간별 예보 <span className="font-normal opacity-60">(한국 시간)</span>
+              </h2>
+              <GlassCard className="p-3">
+                {hourly.length === 0 ? (
+                  <div className="text-sm opacity-80 px-2 py-3 text-center">시간별 정보가 없어요.</div>
+                ) : (
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                    {hourly.map((e, idx) => {
+                      const hv = owmVisual((e.weather && e.weather[0] && e.weather[0].icon) || "01d");
+                      return (
+                        <HourCell
+                          key={e.dt || idx}
+                          hourLabel={forecastLabel(e.dt, tz, cur.dt)}
+                          icon={hv.emoji}
+                          temp={e.main?.temp}
+                          pop={e.pop}
+                          now={idx === 0}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </GlassCard>
+            </section>
+
+            <footer className="mt-8 mb-4 text-center text-[11px] opacity-60">
+              데이터 제공 · OpenWeatherMap · 인터넷 연결이 필요합니다
+            </footer>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 App (상태 / 데이터 흐름)
+    // ========================================
+    function App() {
+      const [status, setStatus] = useState("loading"); // loading | ready | error
+      const [data, setData] = useState(null);
+      const [label, setLabel] = useState("");
+      const [usedFallback, setUsedFallback] = useState(false);
+      const [errorMsg, setErrorMsg] = useState("");
+
+      // HTTP 상태 코드 -> 한국어 메시지
+      function messageForStatus(code) {
+        if (code === 401) return "API 키가 유효하지 않거나 아직 활성화되지 않았습니다. 키를 확인해 주세요.";
+        if (code === 429) return "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.";
+        return "날씨 데이터를 가져오는 중 문제가 발생했어요.";
+      }
+
+      // 좌표로 현재 날씨 + 예보 동시(fetch) — OWM
+      const fetchWeather = useCallback(async ({ lat, lon, label: lbl, fallback = false }) => {
+        setStatus("loading");
+        setErrorMsg("");
+        try {
+          const curUrl =
+            `${OWM_BASE}/data/2.5/weather?lat=${lat}&lon=${lon}` +
+            `&appid=${OWM_API_KEY}&units=metric&lang=kr`;
+          const fcUrl =
+            `${OWM_BASE}/data/2.5/forecast?lat=${lat}&lon=${lon}` +
+            `&appid=${OWM_API_KEY}&units=metric&lang=kr`;
+
+          // 현재 + 예보 병렬 요청
+          const [curRes, fcRes] = await Promise.all([fetch(curUrl), fetch(fcUrl)]);
+
+          if (!curRes.ok) throw { httpStatus: curRes.status, where: "current" };
+          if (!fcRes.ok) throw { httpStatus: fcRes.status, where: "forecast" };
+
+          const current = await curRes.json();
+          const forecast = await fcRes.json();
+
+          if (!current.main || !current.weather) throw new Error("unexpected current shape");
+          if (!forecast.list) throw new Error("unexpected forecast shape");
+
+          setData({ current, forecast });
+          setLabel(lbl);
+          setUsedFallback(fallback);
+          setStatus("ready");
+        } catch (err) {
+          const code = err && err.httpStatus;
+          setErrorMsg(messageForStatus(code));
+          setStatus("error");
+        }
+      }, []);
+
+      // 좌표 -> 한국어 위치 라벨 (역지오코딩). 실패해도 치명적이지 않음.
+      const reverseLabel = useCallback(async (lat, lon) => {
+        try {
+          const url =
+            `${OWM_BASE}/geo/1.0/reverse?lat=${lat}&lon=${lon}` +
+            `&limit=1&appid=${OWM_API_KEY}`;
+          const res = await fetch(url);
+          if (!res.ok) return "현재 위치";
+          const json = await res.json();
+          const r = Array.isArray(json) ? json[0] : null;
+          if (!r) return "현재 위치";
+          return (r.local_names && r.local_names.ko) || r.name || "현재 위치";
+        } catch (e) {
+          return "현재 위치";
+        }
+      }, []);
+
+      // 위치 해석: 지오로케이션 시도 -> 실패 시 서울 폴백 (거부는 에러 아님)
+      const resolveAndFetch = useCallback(() => {
+        if (!("geolocation" in navigator)) {
+          fetchWeather({ ...SEOUL, fallback: true });
+          return;
+        }
+        let settled = false;
+        const fallbackTimer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            fetchWeather({ ...SEOUL, fallback: true });
+          }
+        }, 9000);
+
+        navigator.geolocation.getCurrentPosition(
+          async (pos) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(fallbackTimer);
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            // 역지오코딩으로 한국어 라벨을 먼저 확보한 뒤 날씨 fetch
+            const locLabel = await reverseLabel(lat, lon);
+            fetchWeather({ lat, lon, label: locLabel, fallback: false });
+          },
+          () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(fallbackTimer);
+            // 권한 거부/실패 -> 조용히 서울 폴백 (에러 화면 아님)
+            fetchWeather({ ...SEOUL, fallback: true });
+          },
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 10 * 60 * 1000 }
+        );
+      }, [fetchWeather, reverseLabel]);
+
+      // 최초 1회 위치 해석
+      useEffect(() => {
+        resolveAndFetch();
+      }, [resolveAndFetch]);
+
+      // 검색으로 도시 선택
+      const onSelectCity = useCallback((city) => {
+        fetchWeather({ lat: city.lat, lon: city.lon, label: city.label, fallback: false });
+      }, [fetchWeather]);
+
+      if (status === "loading") return <LoadingView />;
+      if (status === "error") return <ErrorView message={errorMsg} onRetry={resolveAndFetch} />;
+      return (
+        <WeatherView
+          data={data}
+          label={label}
+          usedFallback={usedFallback}
+          onSelectCity={onSelectCity}
+        />
+      );
+    }
+
+    // ========================================
+    // Render
+    // ========================================
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

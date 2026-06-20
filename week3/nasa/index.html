@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>COSMOS · NASA 오늘의 천문학 사진 (APOD)</title>
+
+  <!-- ⚠️ 모든 CDN 버전 고정. @babel/standalone 미고정 시 8.x 로 올라가 text/babel 변환이 깨짐. -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.25.9/babel.min.js"></script>
+
+  <!-- Google Fonts: 디스플레이 세리프(Playfair) + 본문 세리프(Lora) + 한글(Noto Sans KR) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;0,900;1,600;1,700&family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Noto+Sans+KR:wght@300;400;500;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['"Playfair Display"', 'serif'],
+            serif: ['Lora', 'Georgia', 'serif'],
+            kr: ['"Noto Sans KR"', 'sans-serif'],
+          },
+          colors: {
+            ink: '#05060c',
+            void: '#0a0b16',
+            indigoDeep: '#10122a',
+            gold: '#d9b46a',
+            goldSoft: '#e7cf9c',
+            ivory: '#f4efe3',
+          },
+          letterSpacing: {
+            mega: '0.5em',
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    html { scroll-behavior: smooth; }
+    body { background-color: #05060c; }
+
+    /* 별빛 텍스처 + 라디얼 글로우 (Tailwind 로 표현 불가한 다중 배경) */
+    .cosmos-bg {
+      background-color: #05060c;
+      background-image:
+        radial-gradient(1200px 700px at 78% -8%, rgba(99, 102, 241, 0.22), transparent 60%),
+        radial-gradient(900px 600px at 8% 12%, rgba(168, 85, 247, 0.14), transparent 55%),
+        radial-gradient(700px 500px at 50% 110%, rgba(217, 180, 106, 0.10), transparent 60%),
+        radial-gradient(2px 2px at 20% 30%, rgba(255,255,255,0.85), transparent),
+        radial-gradient(2px 2px at 65% 18%, rgba(255,255,255,0.55), transparent),
+        radial-gradient(1.5px 1.5px at 40% 70%, rgba(255,255,255,0.65), transparent),
+        radial-gradient(1.5px 1.5px at 82% 62%, rgba(255,255,255,0.5), transparent),
+        radial-gradient(1px 1px at 12% 82%, rgba(255,255,255,0.6), transparent),
+        radial-gradient(1px 1px at 90% 88%, rgba(255,255,255,0.5), transparent),
+        radial-gradient(1px 1px at 55% 92%, rgba(255,255,255,0.45), transparent);
+      background-repeat: no-repeat;
+    }
+
+    /* 작은 대문자(스몰캡스) 라벨 */
+    .smallcaps {
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      font-feature-settings: "smcp";
+    }
+
+    /* 드롭캡 — 본문 첫 글자 */
+    .dropcap::first-letter {
+      float: left;
+      font-family: 'Playfair Display', serif;
+      font-weight: 700;
+      font-size: 4.6rem;
+      line-height: 0.78;
+      padding: 0.06em 0.12em 0 0;
+      margin: 0.02em 0.04em 0 0;
+      color: #d9b46a;
+      text-shadow: 0 2px 18px rgba(217, 180, 106, 0.35);
+    }
+
+    /* 와이드 화면 2단 본문(잡지 느낌) */
+    @media (min-width: 1024px) {
+      .feature-columns {
+        column-count: 2;
+        column-gap: 3.2rem;
+        column-rule: 1px solid rgba(217, 180, 106, 0.18);
+      }
+      /* 드롭캡 단락이 단 사이에서 쪼개지지 않게 */
+      .feature-columns > p:first-child { break-inside: avoid; }
+    }
+
+    /* 이미지 로딩 셰머 */
+    .shimmer {
+      background: linear-gradient(100deg, #0c0e1d 30%, #1a1d36 50%, #0c0e1d 70%);
+      background-size: 200% 100%;
+      animation: shimmerMove 1.6s infinite linear;
+    }
+    @keyframes shimmerMove {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* 별 반짝임(로더) */
+    @keyframes twinkle {
+      0%, 100% { opacity: 0.2; transform: scale(0.85); }
+      50% { opacity: 1; transform: scale(1.15); }
+    }
+    .twinkle { animation: twinkle 1.8s ease-in-out infinite; }
+
+    /* 엔트런스 애니메이션 */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(22px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .anim-fade-up { animation: fadeUp 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+    .anim-fade-in { animation: fadeIn 1s ease both; }
+    .d1 { animation-delay: 0.08s; }
+    .d2 { animation-delay: 0.18s; }
+    .d3 { animation-delay: 0.30s; }
+    .d4 { animation-delay: 0.44s; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .anim-fade-up, .anim-fade-in, .twinkle, .shimmer { animation: none !important; }
+    }
+
+    /* 스크롤바(다크 테마) */
+    ::-webkit-scrollbar { width: 11px; }
+    ::-webkit-scrollbar-track { background: #05060c; }
+    ::-webkit-scrollbar-thumb { background: #2a2d4a; border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3a3e63; }
+
+    /* date input 캘린더 아이콘을 밝게 (다크 배경 대비) */
+    input[type="date"]::-webkit-calendar-picker-indicator {
+      filter: invert(0.85) sepia(0.4) saturate(2) hue-rotate(5deg);
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body class="cosmos-bg font-kr text-ivory antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // ========================================
+    // React Hooks
+    // ========================================
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+    // ========================================
+    // 상수 / 설정
+    // ========================================
+    // NASA APOD API 키 (필요시 교체) — ⚠️ 클라이언트에 그대로 노출되며 페이지 소스에서 보입니다.
+    const NASA_API_KEY = "CA9CUVQ5T1A2H1nJbEkbdTpaiVFlzXDMO6nWazOG";
+
+    const APOD_ENDPOINT = "https://api.nasa.gov/planetary/apod";
+    const APOD_START_DATE = "1995-06-16"; // APOD 최초 게시일 (하한)
+
+    // ========================================
+    // 날짜 유틸 (로컬 기준, ISO YYYY-MM-DD)
+    // ========================================
+    function toISO(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    }
+    function parseISO(iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(y, m - 1, d); // 로컬 정오 회피용 — 자정 기준이면 충분
+    }
+    function shiftDays(iso, delta) {
+      const d = parseISO(iso);
+      d.setDate(d.getDate() + delta);
+      return toISO(d);
+    }
+    function clampISO(iso, minISO, maxISO) {
+      if (iso < minISO) return minISO;
+      if (maxISO && iso > maxISO) return maxISO;
+      return iso;
+    }
+    function randomDateISO(minISO, maxISO) {
+      const min = parseISO(minISO).getTime();
+      const max = parseISO(maxISO).getTime();
+      const t = min + Math.random() * (max - min);
+      return toISO(new Date(t));
+    }
+
+    // 편집 스타일 날짜 표기
+    const KO_MONTHS = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+    const EN_MONTHS = ["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"];
+    function formatKO(iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return `${y}년 ${KO_MONTHS[m - 1]} ${d}일`;
+    }
+    function formatEN(iso) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return `${EN_MONTHS[m - 1]} ${d}, ${y}`;
+    }
+    // VOL/이슈 번호: APOD 시작일로부터의 일수 (재미 요소)
+    function issueNumber(iso) {
+      const days = Math.round((parseISO(iso) - parseISO(APOD_START_DATE)) / 86400000);
+      return days + 1;
+    }
+
+    // ========================================
+    // 데이터 패치
+    // ========================================
+    class HttpError extends Error {
+      constructor(status, message) {
+        super(message);
+        this.status = status;
+      }
+    }
+
+    async function fetchAPOD(dateISO) {
+      // dateISO 가 null/undefined 면 '최신' 호출 (date 파라미터 생략)
+      let url = `${APOD_ENDPOINT}?api_key=${encodeURIComponent(NASA_API_KEY)}&thumbs=true`;
+      if (dateISO) url += `&date=${dateISO}`;
+
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (networkErr) {
+        throw new HttpError(0, "network");
+      }
+
+      if (!res.ok) {
+        throw new HttpError(res.status, `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      // copyright 공백/개행 정리
+      if (data && typeof data.copyright === "string") {
+        data.copyright = data.copyright.trim();
+        if (data.copyright === "") data.copyright = null;
+      }
+      return data;
+    }
+
+    function errorMessageFor(err) {
+      const status = err && err.status;
+      if (status === 429) {
+        return {
+          title: "요청 한도 초과",
+          body: "NASA API 요청 한도를 초과했어요. 잠시 후 다시 시도해 주세요.",
+        };
+      }
+      if (status === 404 || (status >= 400 && status < 500)) {
+        return {
+          title: "사진을 찾을 수 없어요",
+          body: "해당 날짜의 사진을 찾을 수 없어요. 다른 날짜를 선택해 보세요.",
+        };
+      }
+      if (status === 0) {
+        return {
+          title: "연결할 수 없어요",
+          body: "인터넷 연결을 확인한 뒤 다시 시도해 주세요. (NASA API 에 접속해야 합니다)",
+        };
+      }
+      return {
+        title: "문제가 발생했어요",
+        body: "우주를 불러오는 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.",
+      };
+    }
+
+    // ========================================
+    // 🎨 디자인 시스템 컴포넌트
+    // ========================================
+    function NavButton({ children, onClick, disabled, title, active }) {
+      return (
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={disabled}
+          title={title}
+          aria-label={title}
+          className={[
+            "px-4 py-2 rounded-full text-sm tracking-wide transition-all duration-200 select-none",
+            "border backdrop-blur-sm whitespace-nowrap",
+            disabled
+              ? "border-white/5 text-white/25 cursor-not-allowed bg-white/0"
+              : active
+              ? "border-gold/70 text-ink bg-gold hover:bg-goldSoft shadow-[0_0_22px_rgba(217,180,106,0.35)]"
+              : "border-gold/30 text-goldSoft hover:border-gold/70 hover:text-ivory bg-white/[0.03] hover:bg-white/[0.07]",
+          ].join(" ")}
+        >
+          {children}
+        </button>
+      );
+    }
+
+    function HairRule({ className = "" }) {
+      return (
+        <div
+          className={"h-px w-full bg-gradient-to-r from-transparent via-gold/40 to-transparent " + className}
+        />
+      );
+    }
+
+    function MetaRow({ label, children }) {
+      return (
+        <div className="py-3">
+          <div className="smallcaps text-[10px] text-gold/70 mb-1">{label}</div>
+          <div className="font-serif text-[15px] text-ivory/90 leading-snug break-words">
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 상태 화면: 초기 로딩
+    // ========================================
+    function FullLoader() {
+      const stars = useMemo(
+        () =>
+          Array.from({ length: 18 }).map((_, i) => ({
+            left: Math.random() * 100,
+            top: Math.random() * 100,
+            delay: (Math.random() * 1.8).toFixed(2),
+            size: 2 + Math.random() * 3,
+          })),
+        []
+      );
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center text-center px-6 relative overflow-hidden">
+          <div className="absolute inset-0 pointer-events-none">
+            {stars.map((s, i) => (
+              <span
+                key={i}
+                className="twinkle absolute rounded-full bg-goldSoft"
+                style={{
+                  left: s.left + "%",
+                  top: s.top + "%",
+                  width: s.size + "px",
+                  height: s.size + "px",
+                  animationDelay: s.delay + "s",
+                }}
+              />
+            ))}
+          </div>
+          <div className="relative">
+            <div className="smallcaps text-gold/70 text-xs mb-5 anim-fade-in">N A S A · A P O D</div>
+            <h1 className="font-display font-black text-5xl sm:text-7xl tracking-[0.12em] text-ivory anim-fade-up">
+              COSMOS
+            </h1>
+            <div className="mt-8 flex items-center justify-center gap-2">
+              <span className="twinkle w-2 h-2 rounded-full bg-gold" style={{ animationDelay: "0s" }} />
+              <span className="twinkle w-2 h-2 rounded-full bg-gold" style={{ animationDelay: "0.3s" }} />
+              <span className="twinkle w-2 h-2 rounded-full bg-gold" style={{ animationDelay: "0.6s" }} />
+            </div>
+            <p className="mt-6 font-serif italic text-ivory/60 anim-fade-in d2">
+              오늘의 우주를 불러오는 중...
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 상태 화면: 에러
+    // ========================================
+    function ErrorScreen({ err, onRetry }) {
+      const msg = errorMessageFor(err);
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center text-center px-6">
+          <div className="max-w-md anim-fade-up">
+            <div className="text-6xl mb-6">🛰️</div>
+            <div className="smallcaps text-gold/70 text-xs mb-3">오류</div>
+            <h2 className="font-display text-3xl sm:text-4xl text-ivory mb-4">{msg.title}</h2>
+            <p className="font-serif text-ivory/70 leading-relaxed mb-8">{msg.body}</p>
+            <button
+              type="button"
+              onClick={onRetry}
+              className="px-7 py-3 rounded-full bg-gold text-ink font-medium tracking-wide hover:bg-goldSoft transition-colors shadow-[0_0_24px_rgba(217,180,106,0.35)]"
+            >
+              다시 시도
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🖼️ 미디어: 이미지 (셰머 플레이스홀더 + lazy)
+    // ========================================
+    function HeroImage({ src, alt }) {
+      const [loaded, setLoaded] = useState(false);
+      const [failed, setFailed] = useState(false);
+
+      // src 변경 시 로딩 상태 초기화
+      useEffect(() => {
+        setLoaded(false);
+        setFailed(false);
+      }, [src]);
+
+      return (
+        <div className="relative w-full h-full bg-void overflow-hidden">
+          {!loaded && !failed && (
+            <div className="absolute inset-0 shimmer" aria-hidden="true" />
+          )}
+          {failed ? (
+            <div className="absolute inset-0 flex items-center justify-center text-ivory/50 font-serif">
+              이미지를 불러올 수 없어요
+            </div>
+          ) : (
+            <img
+              src={src}
+              alt={alt}
+              loading="lazy"
+              onLoad={() => setLoaded(true)}
+              onError={() => setFailed(true)}
+              className={
+                "w-full h-full object-cover transition-opacity duration-700 " +
+                (loaded ? "opacity-100" : "opacity-0")
+              }
+            />
+          )}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🎬 미디어: 비디오 (16:9 반응형 iframe)
+    // ========================================
+    function HeroVideo({ url, poster, title }) {
+      return (
+        <div className="relative w-full h-full bg-black">
+          <div className="absolute inset-0">
+            <iframe
+              src={url}
+              title={title}
+              className="w-full h-full"
+              frameBorder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+              loading="lazy"
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🧩 마스트헤드 (잡지 로고타입 + 태그라인 + 이슈 날짜)
+    // ========================================
+    function Masthead({ dateISO }) {
+      return (
+        <header className="pt-10 sm:pt-14 pb-6 px-5 sm:px-8 text-center anim-fade-up">
+          <div className="smallcaps text-[11px] sm:text-xs text-gold/75 mb-3">
+            NASA 오늘의 천문학 사진
+          </div>
+          <h1 className="font-display font-black text-6xl sm:text-8xl md:text-9xl tracking-[0.06em] text-ivory leading-none">
+            COSMOS
+          </h1>
+          <div className="mt-3 font-display italic text-gold text-lg sm:text-xl tracking-wide">
+            Astronomy Picture of the Day
+          </div>
+
+          <div className="mt-7 max-w-4xl mx-auto">
+            <HairRule />
+            <div className="flex items-center justify-center gap-3 sm:gap-6 py-3 flex-wrap">
+              <span className="smallcaps text-[10px] sm:text-xs text-ivory/60">
+                VOL. {issueNumber(dateISO).toLocaleString()}
+              </span>
+              <span className="text-gold/50">·</span>
+              <span className="font-serif text-sm sm:text-base text-ivory/85">{formatKO(dateISO)}</span>
+              <span className="text-gold/50">·</span>
+              <span className="smallcaps text-[10px] sm:text-xs text-ivory/60">{formatEN(dateISO)}</span>
+            </div>
+            <HairRule />
+          </div>
+        </header>
+      );
+    }
+
+    // ========================================
+    // 🧭 내비게이션 (이전/다음 호, 날짜 선택, 오늘, 랜덤)
+    // ========================================
+    function IssueNav({ dateISO, latestISO, busy, onPrev, onNext, onPick, onToday, onRandom }) {
+      const atStart = dateISO <= APOD_START_DATE;
+      const atLatest = !!latestISO && dateISO >= latestISO;
+      return (
+        <nav className="px-5 sm:px-8 mb-8 anim-fade-up d1">
+          <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 rounded-2xl border border-gold/15 bg-white/[0.025] backdrop-blur-sm px-4 sm:px-6 py-4">
+            {/* 이전 / 다음 호 */}
+            <div className="flex items-center justify-between sm:justify-start gap-3">
+              <NavButton onClick={onPrev} disabled={atStart || busy} title="이전 호">
+                ◀ 이전 호
+              </NavButton>
+              <NavButton onClick={onNext} disabled={atLatest || busy} title="다음 호">
+                다음 호 ▶
+              </NavButton>
+            </div>
+
+            {/* 날짜 점프 + 오늘 + 랜덤 */}
+            <div className="flex items-center justify-between sm:justify-end gap-3 flex-wrap">
+              <label className="flex items-center gap-2">
+                <span className="smallcaps text-[10px] text-gold/70 hidden sm:inline">날짜</span>
+                <input
+                  type="date"
+                  value={dateISO}
+                  min={APOD_START_DATE}
+                  max={latestISO || toISO(new Date())}
+                  disabled={busy}
+                  onChange={(e) => e.target.value && onPick(e.target.value)}
+                  className="bg-void/80 border border-gold/25 rounded-lg px-3 py-2 text-sm text-ivory font-serif focus:outline-none focus:border-gold/70 disabled:opacity-50"
+                />
+              </label>
+              <NavButton onClick={onRandom} disabled={busy} title="랜덤 날짜">
+                🎲 랜덤
+              </NavButton>
+              <NavButton onClick={onToday} disabled={atLatest || busy} title="최신으로" active={atLatest}>
+                오늘
+              </NavButton>
+            </div>
+          </div>
+        </nav>
+      );
+    }
+
+    // ========================================
+    // 📄 잡지 본문 (히어로 + 기사 + 사이드바)
+    // ========================================
+    function Issue({ data, busy }) {
+      const isVideo = data.media_type === "video";
+      const credit = data.copyright || "NASA";
+      const hdLink = data.hdurl || data.url;
+      const displaySrc =
+        data.media_type === "image"
+          ? data.url
+          : data.thumbnail_url || null;
+
+      return (
+        <article className="px-5 sm:px-8 pb-20">
+          <div className="max-w-6xl mx-auto">
+            {/* ===== 히어로 ===== */}
+            <figure
+              key={data.date + "-hero"}
+              className="relative rounded-2xl overflow-hidden border border-white/10 shadow-[0_30px_90px_-30px_rgba(0,0,0,0.9)] anim-fade-up d1"
+            >
+              {/* 새 호 로딩 중 오버레이 (페이지를 비우지 않음) */}
+              {busy && (
+                <div className="absolute inset-0 z-20 bg-ink/55 backdrop-blur-[2px] flex items-center justify-center">
+                  <div className="flex items-center gap-2">
+                    <span className="twinkle w-2.5 h-2.5 rounded-full bg-gold" style={{ animationDelay: "0s" }} />
+                    <span className="twinkle w-2.5 h-2.5 rounded-full bg-gold" style={{ animationDelay: "0.3s" }} />
+                    <span className="twinkle w-2.5 h-2.5 rounded-full bg-gold" style={{ animationDelay: "0.6s" }} />
+                  </div>
+                </div>
+              )}
+
+              {/* 16:9 비율 박스 */}
+              <div className="relative w-full" style={{ aspectRatio: "16 / 9" }}>
+                {isVideo ? (
+                  <HeroVideo url={data.url} poster={displaySrc} title={data.title} />
+                ) : (
+                  <HeroImage src={data.url} alt={data.title} />
+                )}
+
+                {/* 이미지일 때만 제목 스크림 오버레이 (비디오는 iframe 위에 덮지 않음) */}
+                {!isVideo && (
+                  <div className="absolute inset-0 pointer-events-none flex flex-col justify-end">
+                    <div className="bg-gradient-to-t from-ink via-ink/70 to-transparent pt-24 pb-6 px-5 sm:px-10">
+                      <div className="smallcaps text-[10px] sm:text-xs text-gold mb-2">
+                        {isVideo ? "오늘의 영상" : "오늘의 사진"} · {formatEN(data.date)}
+                      </div>
+                      <h2 className="font-display font-bold text-3xl sm:text-5xl md:text-6xl text-ivory leading-[1.05] drop-shadow-[0_2px_18px_rgba(0,0,0,0.8)]">
+                        {data.title}
+                      </h2>
+                      <p className="mt-3 font-serif italic text-sm text-ivory/70">
+                        사진: {credit}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </figure>
+
+            {/* 비디오일 때 제목은 아래에 (iframe 을 가리지 않도록) */}
+            {isVideo && (
+              <div className="mt-6 anim-fade-up d2">
+                <div className="smallcaps text-[10px] sm:text-xs text-gold mb-2">
+                  오늘의 영상 · {formatEN(data.date)}
+                </div>
+                <h2 className="font-display font-bold text-3xl sm:text-5xl text-ivory leading-tight">
+                  {data.title}
+                </h2>
+                <p className="mt-2 font-serif italic text-sm text-ivory/70">제공: {credit}</p>
+              </div>
+            )}
+
+            {/* ===== 본문 그리드: 기사 + 사이드바 ===== */}
+            <div className="mt-12 grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-10 lg:gap-14">
+              {/* 기사 본문 */}
+              <div className="anim-fade-up d2">
+                <div className="smallcaps text-[11px] text-gold/80 mb-4 flex items-center gap-3">
+                  <span className="h-px w-8 bg-gold/50" />
+                  Feature · 천문학 해설
+                </div>
+
+                {/* 영어 원문 안내 (NASA 정식 해설) */}
+                <p className="font-kr text-xs text-ivory/45 mb-5 leading-relaxed">
+                  아래 해설은 NASA가 작성한 원문(영어)입니다. 기계 번역 없이 천문학자의 원래 설명을 그대로 싣습니다.
+                </p>
+
+                <div className="feature-columns font-serif text-[17px] leading-[1.85] text-ivory/90">
+                  <p className="dropcap">{data.explanation}</p>
+                </div>
+
+                {/* 이미지일 때 HD 보기 버튼 (본문 하단에도) */}
+                {!isVideo && (
+                  <div className="mt-10 flex flex-wrap gap-3">
+                    <a
+                      href={hdLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-6 py-3 rounded-full bg-gold text-ink font-medium text-sm tracking-wide hover:bg-goldSoft transition-colors shadow-[0_0_22px_rgba(217,180,106,0.3)]"
+                    >
+                      ⤢ HD로 보기
+                    </a>
+                    <a
+                      href={data.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-6 py-3 rounded-full border border-gold/30 text-goldSoft font-medium text-sm tracking-wide hover:border-gold/70 hover:text-ivory transition-colors"
+                    >
+                      원본 이미지 열기
+                    </a>
+                  </div>
+                )}
+                {isVideo && (
+                  <div className="mt-10 flex flex-wrap gap-3">
+                    <a
+                      href={data.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-6 py-3 rounded-full bg-gold text-ink font-medium text-sm tracking-wide hover:bg-goldSoft transition-colors shadow-[0_0_22px_rgba(217,180,106,0.3)]"
+                    >
+                      ▶ 영상 원본 열기
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              {/* 편집 메타데이터 사이드바 */}
+              <aside className="anim-fade-up d3">
+                <div className="lg:sticky lg:top-8 rounded-2xl border border-gold/15 bg-white/[0.02] backdrop-blur-sm p-6">
+                  <div className="smallcaps text-[11px] text-gold mb-1">정보</div>
+                  <div className="font-display italic text-ivory/80 text-lg mb-2">Editorial Notes</div>
+                  <HairRule className="mb-1" />
+
+                  <div className="divide-y divide-gold/10">
+                    <MetaRow label="날짜 · Date">
+                      {formatKO(data.date)}
+                      <span className="block text-xs text-ivory/45 mt-0.5">{data.date}</span>
+                    </MetaRow>
+                    <MetaRow label="저작권 · Credit">{credit}</MetaRow>
+                    <MetaRow label="미디어 유형 · Media">
+                      {data.media_type === "video" ? "영상 (Video)" : "사진 (Image)"}
+                    </MetaRow>
+                    <MetaRow label="고화질 · HD">
+                      {data.media_type === "image" ? (
+                        <a
+                          href={hdLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gold hover:text-goldSoft underline decoration-gold/40 underline-offset-4"
+                        >
+                          HD 원본 열기 ↗
+                        </a>
+                      ) : (
+                        <a
+                          href={data.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gold hover:text-goldSoft underline decoration-gold/40 underline-offset-4"
+                        >
+                          영상 원본 열기 ↗
+                        </a>
+                      )}
+                    </MetaRow>
+                  </div>
+
+                  <HairRule className="mt-2 mb-4" />
+                  <p className="smallcaps text-[9px] text-ivory/35 leading-relaxed">
+                    Source · NASA APOD<br />
+                    api.nasa.gov
+                  </p>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </article>
+      );
+    }
+
+    // ========================================
+    // 푸터
+    // ========================================
+    function Footer() {
+      return (
+        <footer className="px-5 sm:px-8 pb-12">
+          <div className="max-w-6xl mx-auto">
+            <HairRule className="mb-6" />
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
+              <div className="font-display italic text-gold text-xl">COSMOS</div>
+              <p className="smallcaps text-[10px] text-ivory/40 leading-relaxed">
+                Astronomy Picture of the Day · NASA / api.nasa.gov<br className="sm:hidden" />
+                <span className="hidden sm:inline"> · </span>
+                해설 원문은 NASA 제공 (영어)
+              </p>
+            </div>
+          </div>
+        </footer>
+      );
+    }
+
+    // ========================================
+    // 🚀 App
+    // ========================================
+    function App() {
+      const [data, setData] = useState(null);       // 현재 표시 중인 APOD
+      const [dateISO, setDateISO] = useState(null);  // 현재 날짜 (data.date 와 동기)
+      const [latestISO, setLatestISO] = useState(null); // 최신 날짜 (상한)
+      const [phase, setPhase] = useState("init");    // 'init' | 'ready' | 'error'
+      const [busy, setBusy] = useState(false);       // 내비게이션 중 (페이지 유지)
+      const [err, setErr] = useState(null);
+
+      const reqId = useRef(0); // 경쟁 상태 방지 (마지막 요청만 반영)
+
+      // 특정 날짜(또는 최신) 로드
+      const load = useCallback(async (targetISO, isInitial) => {
+        const myId = ++reqId.current;
+        if (isInitial) setPhase("init");
+        else setBusy(true);
+        setErr(null);
+
+        try {
+          const result = await fetchAPOD(targetISO); // targetISO null → 최신
+          if (myId !== reqId.current) return; // 더 최신 요청이 진행 중 → 폐기
+
+          setData(result);
+          setDateISO(result.date);
+          if (isInitial) {
+            setLatestISO(result.date); // 최신 호출 결과를 상한으로
+          }
+          setPhase("ready");
+        } catch (e) {
+          if (myId !== reqId.current) return;
+          setErr(e);
+          if (isInitial) {
+            setPhase("error"); // 초기 실패 → 전체 에러 화면
+          } else {
+            // 내비 중 실패: 기존 호는 유지하고 토스트성 에러는 콘솔 + 전체 에러로 전환
+            setPhase("error");
+          }
+        } finally {
+          if (myId === reqId.current) setBusy(false);
+        }
+      }, []);
+
+      // 최초 마운트: 최신 APOD
+      useEffect(() => {
+        load(null, true);
+      }, [load]);
+
+      // 내비게이션 핸들러
+      const go = useCallback(
+        (targetISO) => {
+          const clamped = clampISO(targetISO, APOD_START_DATE, latestISO);
+          if (clamped === dateISO) return; // 동일 날짜면 무시
+          load(clamped, false);
+        },
+        [dateISO, latestISO, load]
+      );
+
+      const handlePrev = useCallback(() => go(shiftDays(dateISO, -1)), [dateISO, go]);
+      const handleNext = useCallback(() => go(shiftDays(dateISO, +1)), [dateISO, go]);
+      const handlePick = useCallback((iso) => go(iso), [go]);
+      const handleToday = useCallback(() => {
+        if (latestISO) go(latestISO);
+      }, [latestISO, go]);
+      const handleRandom = useCallback(() => {
+        if (!latestISO) return;
+        const r = randomDateISO(APOD_START_DATE, latestISO);
+        load(r, false);
+      }, [latestISO, load]);
+
+      const handleRetry = useCallback(() => {
+        // ready 데이터가 있으면 현재 날짜 재시도, 없으면 최신 재시도
+        if (data && dateISO) load(dateISO, false);
+        else load(null, true);
+        setPhase(data ? "ready" : "init");
+      }, [data, dateISO, load]);
+
+      // ----- 렌더 -----
+      if (phase === "init") return <FullLoader />;
+      if (phase === "error" && !data) return <ErrorScreen err={err} onRetry={handleRetry} />;
+      // 내비 중 에러지만 기존 데이터가 있으면 에러 화면 (다시 시도로 복구)
+      if (phase === "error" && data) return <ErrorScreen err={err} onRetry={handleRetry} />;
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          <Masthead dateISO={dateISO} />
+          <IssueNav
+            dateISO={dateISO}
+            latestISO={latestISO}
+            busy={busy}
+            onPrev={handlePrev}
+            onNext={handleNext}
+            onPick={handlePick}
+            onToday={handleToday}
+            onRandom={handleRandom}
+          />
+          <main className="flex-1">
+            <Issue data={data} busy={busy} />
+          </main>
+          <Footer />
+        </div>
+      );
+    }
+
+    // ========================================
+    // Rendering
+    // ========================================
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
