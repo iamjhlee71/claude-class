@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>포켓몬 도감 · Pokédex</title>
+
+  <!-- ⚠️ 모든 CDN은 버전 고정. @babel/standalone 은 반드시 7.x (8.x 는 text/babel 인라인 변환이 깨짐). -->
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.25.9/babel.min.js"></script>
+
+  <!-- Korean-friendly font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+  <style>
+    * { font-family: 'Noto Sans KR', system-ui, sans-serif; }
+
+    /* 카드 등장 애니메이션 */
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(16px) scale(0.96); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .animate-cardIn { animation: cardIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+    /* 모달 등장 */
+    @keyframes modalIn {
+      from { opacity: 0; transform: translateY(24px) scale(0.95); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .animate-modalIn { animation: modalIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .animate-fadeIn { animation: fadeIn 0.25s ease both; }
+
+    /* 포켓볼 회전 (헤더 렌즈 점멸 느낌) */
+    @keyframes lensPulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,255,255,0.7); }
+      50%      { opacity: 0.85; box-shadow: 0 0 14px 4px rgba(255,255,255,0.55); }
+    }
+    .lens-pulse { animation: lensPulse 2.4s ease-in-out infinite; }
+
+    /* 디테일 큰 이미지 둥실 */
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-10px); }
+    }
+    .animate-float { animation: float 3.2s ease-in-out infinite; }
+
+    /* 스크롤바 살짝 */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+  </style>
+</head>
+<body class="bg-slate-100">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // ========================================
+    // React Hooks
+    // ========================================
+    const { useState, useMemo, useEffect, useCallback, useRef } = React;
+
+    // ========================================
+    // 데이터 & 상수 (PokéAPI 연동)
+    // ========================================
+
+    // PokéAPI base
+    const API_BASE_URL = 'https://pokeapi.co/api/v2';
+
+    // 전국도감 전체 마릿수 (한 번의 인덱스 요청으로 모두 받아온다)
+    const NATIONAL_DEX_LIMIT = 1025;
+
+    // 무한 스크롤: 한 번에 추가로 렌더링할 카드 수
+    const BATCH_SIZE = 30;
+
+    // 동시 상세 요청 제한 (빠른 스크롤 시 수백 개 요청이 한꺼번에 나가는 것 방지)
+    const DETAIL_CONCURRENCY = 6;
+
+    // 공식 아트워크 URL (id 로 결정적으로 생성 — 인덱스만으로 이미지 표시 가능)
+    const ARTWORK_URL = (id) =>
+      `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`;
+
+    // 영문 타입 키 -> { 한글 라벨, 색상 } (전체 18타입: 앞으로 어떤 포켓몬이 와도 동작)
+    const TYPE_MAP = {
+      normal:   { ko: '노말',   color: '#A8A77A' },
+      fire:     { ko: '불꽃',   color: '#EE8130' },
+      water:    { ko: '물',     color: '#6390F0' },
+      electric: { ko: '전기',   color: '#F7D02C' },
+      grass:    { ko: '풀',     color: '#7AC74C' },
+      ice:      { ko: '얼음',   color: '#96D9D6' },
+      fighting: { ko: '격투',   color: '#C22E28' },
+      poison:   { ko: '독',     color: '#A33EA1' },
+      ground:   { ko: '땅',     color: '#E2BF65' },
+      flying:   { ko: '비행',   color: '#A98FF3' },
+      psychic:  { ko: '에스퍼', color: '#F95587' },
+      bug:      { ko: '벌레',   color: '#A6B91A' },
+      rock:     { ko: '바위',   color: '#B6A136' },
+      ghost:    { ko: '고스트', color: '#735797' },
+      dragon:   { ko: '드래곤', color: '#6F35FC' },
+      dark:     { ko: '악',     color: '#705746' },
+      steel:    { ko: '강철',   color: '#B7B7CE' },
+      fairy:    { ko: '페어리', color: '#D685AD' },
+    };
+
+    // 노랑처럼 밝은 배지는 검은 글씨가 가독성이 좋다 (전기)
+    const DARK_TEXT_TYPES = new Set(['electric']);
+
+    // 픽셀 스프라이트 폴백 URL (공식 아트워크 onError 시)
+    const PIXEL_SPRITE = (id) =>
+      `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${id}.png`;
+
+    // ========================================
+    // 유틸
+    // ========================================
+    const padDex = (n) => String(n).padStart(3, '0');
+
+    const capitalize = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+    // PokéAPI 한글 텍스트는 U+00A0(non-breaking space), \f, \n 등이 섞여 있다.
+    // 모든 공백/제어문자를 일반 공백 하나로 정규화하고 trim.
+    const cleanText = (s) =>
+      (s || '')
+        .replace(/ /g, ' ')
+        .replace(/[\n\r\f\t ]+/g, ' ')
+        .trim();
+
+    // 영문 타입키 -> 한글 라벨 / 색상 / 글자색
+    const typeLabel = (key) => (TYPE_MAP[key] ? TYPE_MAP[key].ko : key);
+    const typeColor = (key) => (TYPE_MAP[key] ? TYPE_MAP[key].color : '#777');
+    const typeTextColor = (key) => (DARK_TEXT_TYPES.has(key) ? '#3f2d00' : '#ffffff');
+
+    // hex -> rgba (카드 배경 틴트용)
+    const hexToRgba = (hex, alpha) => {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substring(0, 2), 16);
+      const g = parseInt(h.substring(2, 4), 16);
+      const b = parseInt(h.substring(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    };
+
+    // 이미지 onError -> 픽셀 스프라이트로 폴백 (한 번만)
+    const handleImgError = (e, fallbackSrc) => {
+      const img = e.currentTarget;
+      if (img.dataset.fallback === '1') return; // 이미 폴백함
+      img.dataset.fallback = '1';
+      if (fallbackSrc) img.src = fallbackSrc;
+    };
+
+    // ========================================
+    // PokéAPI: fetch + normalize
+    // ========================================
+
+    // 응답 ok 체크 후 JSON 파싱
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`요청 실패 (${res.status}): ${url}`);
+      }
+      return res.json();
+    }
+
+    // pokemon + pokemon-species 두 응답을 컴포넌트가 쓰는 형태로 정규화
+    function normalizePokemon(id, pokemon, species) {
+      // 한글 이름 (없으면 영문 이름 capitalize 폴백)
+      const koNameEntry = (species.names || []).find((n) => n.language.name === 'ko');
+      const en = capitalize(pokemon.name);
+      const name = koNameEntry ? koNameEntry.name : en;
+
+      // 타입: 영문 키 배열로 저장 (TYPE_MAP 으로 라벨/색상 조회)
+      const types = (pokemon.types || [])
+        .sort((a, b) => a.slot - b.slot)
+        .map((t) => t.type.name);
+
+      // 분류 (genera) - 한글
+      const koGenus = (species.genera || []).find((g) => g.language.name === 'ko');
+      const category = koGenus ? cleanText(koGenus.genus) : '';
+
+      // 설명 (flavor text) - 첫 한글 항목
+      const koFlavor = (species.flavor_text_entries || []).find(
+        (f) => f.language.name === 'ko'
+      );
+      const description = koFlavor ? cleanText(koFlavor.flavor_text) : '';
+
+      // 이미지: 공식 아트워크 (폴백: 픽셀 스프라이트)
+      const official =
+        pokemon.sprites &&
+        pokemon.sprites.other &&
+        pokemon.sprites.other['official-artwork'] &&
+        pokemon.sprites.other['official-artwork'].front_default;
+      const pixel =
+        (pokemon.sprites && pokemon.sprites.front_default) || PIXEL_SPRITE(id);
+
+      return {
+        id,
+        dex: id,
+        name,
+        en,
+        types,
+        category,
+        height: pokemon.height / 10, // 데시미터 -> m
+        weight: pokemon.weight / 10, // 헥토그램 -> kg
+        description,
+        image: official || pixel,
+        fallbackImage: pixel,
+      };
+    }
+
+    // ----------------------------------------
+    // 1) 인덱스: 전국도감 전체를 한 번만 받아온다 (값싼 요청)
+    //    -> [{ id, enName }] (id 오름차순). url 끝의 숫자가 도감번호.
+    // ----------------------------------------
+    async function loadIndex() {
+      const data = await fetchJson(
+        `${API_BASE_URL}/pokemon?limit=${NATIONAL_DEX_LIMIT}&offset=0`
+      );
+      const list = (data.results || []).map((r) => {
+        // url: https://pokeapi.co/api/v2/pokemon/{id}/
+        const m = r.url.match(/\/pokemon\/(\d+)\/?$/);
+        const id = m ? Number(m[1]) : NaN;
+        return { id, enName: capitalize(r.name) };
+      });
+      list.sort((a, b) => a.id - b.id);
+      return list;
+    }
+
+    // ----------------------------------------
+    // 2) 상세 캐시 + in-flight 공유 + 동시성 제한
+    //    detailCache: id -> Promise<normalized>  (해석값이 아니라 "프로미스"를 저장)
+    //    -> 같은 id 에 대한 중복/동시 호출은 하나의 프로미스를 공유한다 (id 당 1회만 fetch).
+    // ----------------------------------------
+    const detailCache = new Map();
+
+    // 아주 단순한 세마포어 (동시 실행 개수 제한)
+    function makeLimiter(max) {
+      let active = 0;
+      const queue = [];
+      const next = () => {
+        if (active >= max || queue.length === 0) return;
+        active++;
+        const { task, resolve, reject } = queue.shift();
+        task().then(resolve, reject).finally(() => {
+          active--;
+          next();
+        });
+      };
+      return (task) =>
+        new Promise((resolve, reject) => {
+          queue.push({ task, resolve, reject });
+          next();
+        });
+    }
+    const limitDetail = makeLimiter(DETAIL_CONCURRENCY);
+
+    // id 하나의 상세를 가져온다 (캐시 우선, 동시성 제한, 1회만 fetch).
+    function getDetail(id) {
+      if (detailCache.has(id)) return detailCache.get(id);
+
+      const promise = limitDetail(async () => {
+        const [pokemon, species] = await Promise.all([
+          fetchJson(`${API_BASE_URL}/pokemon/${id}`),
+          fetchJson(`${API_BASE_URL}/pokemon-species/${id}`),
+        ]);
+        return normalizePokemon(id, pokemon, species);
+      }).catch((err) => {
+        // 실패 시 캐시에서 제거해 나중에 재시도 가능하게 한다.
+        detailCache.delete(id);
+        throw err;
+      });
+
+      detailCache.set(id, promise);
+      return promise;
+    }
+
+    // 인덱스 항목(값싼 데이터)으로 카드가 즉시 쓸 수 있는 최소 포켓몬 객체를 만든다.
+    function stubFromIndex(entry) {
+      return {
+        id: entry.id,
+        dex: entry.id,
+        name: entry.enName, // 한글 이름 도착 전 임시 표시
+        en: entry.enName,
+        types: [], // 상세 도착 전엔 타입 없음
+        category: '',
+        height: 0,
+        weight: 0,
+        description: '',
+        image: ARTWORK_URL(entry.id),
+        fallbackImage: PIXEL_SPRITE(entry.id),
+        _detail: false, // 상세 로드 완료 여부
+      };
+    }
+
+    // ========================================
+    // 🪝 Custom Hooks (가시성 / 지연 상세 로드)
+    // ========================================
+
+    // 요소가 뷰포트(또는 rootMargin 영역)에 들어오면 inView=true 로 만든다.
+    // 한 번 보이면 계속 true 유지 (once) — 상세는 한 번만 요청하면 되므로.
+    function useInView(options) {
+      const ref = useRef(null);
+      const [inView, setInView] = useState(false);
+
+      useEffect(() => {
+        const el = ref.current;
+        if (!el || inView) return; // 이미 봤으면 옵저버 불필요
+        if (typeof IntersectionObserver === 'undefined') {
+          setInView(true); // 미지원 환경 폴백
+          return;
+        }
+        const io = new IntersectionObserver((entries) => {
+          if (entries.some((e) => e.isIntersecting)) {
+            setInView(true);
+            io.disconnect();
+          }
+        }, options);
+        io.observe(el);
+        return () => io.disconnect();
+      }, [inView]);
+
+      return [ref, inView];
+    }
+
+    // 카드가 보일 때(active=true) 해당 id 의 상세를 지연 로드한다.
+    // 반환: { detail, loading, failed } — 실패해도 던지지 않고 graceful degrade.
+    function useLazyDetail(id, active) {
+      const [detail, setDetail] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [failed, setFailed] = useState(false);
+
+      useEffect(() => {
+        if (!active || detail) return;
+        let cancelled = false;
+        setLoading(true);
+        setFailed(false);
+        getDetail(id)
+          .then((d) => {
+            if (!cancelled) setDetail(d);
+          })
+          .catch(() => {
+            // 카드 1개 실패는 전체 에러 화면으로 번지지 않게 한다.
+            if (!cancelled) setFailed(true);
+          })
+          .finally(() => {
+            if (!cancelled) setLoading(false);
+          });
+        return () => {
+          cancelled = true;
+        };
+      }, [id, active, detail]);
+
+      return { detail, loading, failed };
+    }
+
+    // ========================================
+    // 🎨 Design System: TypeBadge
+    // ========================================
+    function TypeBadge({ type, size = 'md', className = '' }) {
+      const bg = typeColor(type);
+      const sizes = {
+        sm: 'text-[11px] px-2 py-0.5',
+        md: 'text-xs px-2.5 py-1',
+        lg: 'text-sm px-3.5 py-1.5',
+      };
+      return (
+        <span
+          className={`inline-flex items-center gap-1 rounded-full font-bold tracking-wide shadow-sm ${sizes[size]} ${className}`}
+          style={{ backgroundColor: bg, color: typeTextColor(type) }}
+        >
+          {typeLabel(type)}
+        </span>
+      );
+    }
+
+    // ========================================
+    // 🎨 Design System: PokeImage (폴백 포함)
+    // ========================================
+    function PokeImage({ src, fallbackSrc, alt, className = '', imgClassName = '' }) {
+      const [loaded, setLoaded] = useState(false);
+      return (
+        <div className={`relative ${className}`}>
+          {!loaded && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="h-8 w-8 rounded-full border-4 border-slate-300 border-t-red-500 animate-spin" />
+            </div>
+          )}
+          <img
+            src={src}
+            alt={alt}
+            loading="lazy"
+            onError={(e) => handleImgError(e, fallbackSrc)}
+            onLoad={() => setLoaded(true)}
+            className={`h-full w-full object-contain transition-opacity duration-500 ${loaded ? 'opacity-100' : 'opacity-0'} ${imgClassName}`}
+            draggable="false"
+          />
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🎨 Design System: PokedexHeader (레드 도감 상단바)
+    // ========================================
+    function PokedexHeader() {
+      return (
+        <header className="bg-gradient-to-b from-red-600 to-red-700 shadow-xl shadow-red-900/30 border-b-4 border-red-900">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center gap-4">
+            {/* 큰 메인 렌즈 */}
+            <div className="relative shrink-0">
+              <div className="h-12 w-12 sm:h-14 sm:w-14 rounded-full bg-sky-300 border-4 border-white ring-2 ring-red-900/40 lens-pulse flex items-center justify-center">
+                <span className="block h-3 w-3 sm:h-4 sm:w-4 rounded-full bg-white/80" />
+              </div>
+            </div>
+
+            {/* 작은 신호등 렌즈들 */}
+            <div className="hidden xs:flex sm:flex items-center gap-1.5 shrink-0">
+              <span className="h-3 w-3 rounded-full bg-red-400 border border-red-900/40" />
+              <span className="h-3 w-3 rounded-full bg-yellow-300 border border-yellow-700/40" />
+              <span className="h-3 w-3 rounded-full bg-green-400 border border-green-800/40" />
+            </div>
+
+            {/* 타이틀 */}
+            <div className="ml-auto text-right">
+              <h1 className="text-white font-black text-xl sm:text-3xl tracking-tight drop-shadow">
+                포켓몬 도감
+              </h1>
+              <p className="text-red-100/90 text-[11px] sm:text-sm font-medium -mt-0.5">
+                Pokédex · 전국도감 컬렉션
+              </p>
+            </div>
+          </div>
+          {/* 하단 분리 라인 (도감 힌지 느낌) */}
+          <div className="h-2 bg-slate-800/90 border-t-2 border-black/30" />
+        </header>
+      );
+    }
+
+    // ========================================
+    // 🎨 Design System: SearchBar
+    // ========================================
+    function SearchBar({ value, onChange }) {
+      return (
+        <div className="relative max-w-md mx-auto">
+          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+            </svg>
+          </div>
+          <input
+            type="text"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="포켓몬 이름으로 검색 (예: 피카츄)"
+            aria-label="포켓몬 이름 검색"
+            className="w-full pl-12 pr-10 py-3 rounded-2xl bg-white border-2 border-slate-200 shadow-sm
+                       focus:outline-none focus:border-red-400 focus:ring-4 focus:ring-red-100
+                       text-slate-700 placeholder-slate-400 font-medium transition"
+          />
+          {value && (
+            <button
+              type="button"
+              onClick={() => onChange('')}
+              aria-label="검색어 지우기"
+              className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🧩 PokemonCard
+    //  - 인덱스(값싼 데이터)로 즉시 렌더: 이미지 + No. + 영문 이름
+    //  - 화면에 보이면 getDetail(id) 로 상세 지연 로드 → 한글 이름 + 타입 배지로 업그레이드
+    //  - 로드된 상세는 onDetail 로 상위에 올려 모달/검색이 재사용
+    // ========================================
+    function PokemonCard({ stub, index, onSelect, onDetail }) {
+      // 카드가 뷰포트 근처(아래로 120px 미리)에 오면 상세 로드 트리거
+      const [ref, inView] = useInView({ rootMargin: '120px' });
+      const { detail, failed } = useLazyDetail(stub.id, inView);
+
+      // 상세가 도착하면 상위로 전달 (검색/모달 재사용용)
+      useEffect(() => {
+        if (detail && onDetail) onDetail(detail);
+      }, [detail, onDetail]);
+
+      // 표시에 쓸 데이터: 상세가 있으면 상세, 없으면 stub
+      const data = detail || stub;
+      const primary = detail && data.types.length ? typeColor(data.types[0]) : '#cbd5e1';
+      const cardStyle = {
+        background: `linear-gradient(160deg, ${hexToRgba(primary, 0.16)} 0%, #ffffff 55%)`,
+        animationDelay: `${Math.min(index, 12) * 60}ms`,
+      };
+
+      return (
+        <button
+          ref={ref}
+          type="button"
+          onClick={() => onSelect(stub.id)}
+          aria-label={`${data.name} 상세 보기`}
+          style={cardStyle}
+          className="animate-cardIn group relative text-left rounded-3xl p-4 border border-white/70
+                     shadow-md hover:shadow-2xl shadow-slate-200/70
+                     transition-all duration-300 ease-out hover:-translate-y-2 hover:scale-[1.03]
+                     focus:outline-none focus:ring-4 focus:ring-red-200 overflow-hidden"
+        >
+          {/* 배경 워터마크 도감번호 */}
+          <span
+            className="absolute -top-2 right-2 text-5xl font-black opacity-10 select-none"
+            style={{ color: primary }}
+            aria-hidden="true"
+          >
+            #{padDex(data.dex)}
+          </span>
+
+          {/* 이미지 (id 로 결정적 URL — fetch 불필요) */}
+          <div className="relative aspect-square mb-2">
+            <div
+              className="absolute inset-3 rounded-full blur-xl opacity-40 group-hover:opacity-60 transition"
+              style={{ backgroundColor: primary }}
+              aria-hidden="true"
+            />
+            <PokeImage
+              src={data.image}
+              fallbackSrc={data.fallbackImage}
+              alt={data.name}
+              className="relative h-full w-full"
+              imgClassName="drop-shadow-lg group-hover:scale-110 transition-transform duration-300"
+            />
+          </div>
+
+          {/* 도감번호 */}
+          <p className="text-xs font-bold text-slate-400 tracking-wider">No. {padDex(data.dex)}</p>
+
+          {/* 이름 (상세 전: 영문 / 상세 후: 한글) */}
+          <h3 className="text-lg font-black text-slate-800 leading-tight">{data.name}</h3>
+          <p className="text-[11px] text-slate-400 font-medium mb-2">{data.en}</p>
+
+          {/* 타입 배지 영역 */}
+          <div className="flex flex-wrap gap-1.5 min-h-[24px]">
+            {detail ? (
+              data.types.map((t) => <TypeBadge key={t} type={t} size="sm" />)
+            ) : failed ? (
+              // 단일 카드 실패: 배지 없이 graceful degrade
+              <span className="text-[11px] text-slate-300 font-medium">타입 정보 없음</span>
+            ) : (
+              // 로딩 중 스켈레톤 (배지 자리 placeholder)
+              <>
+                <span className="h-[22px] w-12 rounded-full bg-slate-200 animate-pulse" />
+                <span className="h-[22px] w-12 rounded-full bg-slate-200/70 animate-pulse" />
+              </>
+            )}
+          </div>
+        </button>
+      );
+    }
+
+    // ========================================
+    // 🧩 DetailModal (상세 오버레이)
+    // ========================================
+    function DetailModal({ id, stub, onClose }) {
+      // 모달이 열리면 항상 상세 로드 (캐시에 있으면 즉시, 없으면 fetch + 로딩 상태)
+      const { detail, failed } = useLazyDetail(id, true);
+
+      // ESC 닫기 + 스크롤 잠금
+      useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+        document.addEventListener('keydown', onKey);
+        document.body.style.overflow = 'hidden';
+        return () => {
+          document.removeEventListener('keydown', onKey);
+          document.body.style.overflow = '';
+        };
+      }, [onClose]);
+
+      if (!stub) return null;
+
+      // 상세 도착 전엔 stub(영문 이름 + 이미지)로 헤더를 채우고, 상세 영역만 로딩 표시
+      const data = detail || stub;
+      const hasDetail = !!detail;
+      const primary = hasDetail && data.types.length ? typeColor(data.types[0]) : '#94a3b8';
+
+      const stat = (label, value) => (
+        <div className="flex-1 rounded-2xl bg-slate-50 border border-slate-100 px-4 py-3 text-center">
+          <p className="text-[11px] font-bold text-slate-400 mb-0.5">{label}</p>
+          <p className="text-lg font-black text-slate-800">{value}</p>
+        </div>
+      );
+
+      return (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 animate-fadeIn"
+          onClick={onClose}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${data.name} 상세 정보`}
+        >
+          <div
+            className="animate-modalIn relative w-full sm:max-w-lg bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 상단 컬러 헤더 */}
+            <div
+              className="relative px-6 pt-6 pb-24"
+              style={{ background: `linear-gradient(160deg, ${primary} 0%, ${hexToRgba(primary, 0.65)} 100%)` }}
+            >
+              {/* 닫기 버튼 */}
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="닫기"
+                className="absolute top-4 right-4 h-10 w-10 rounded-full bg-white/25 hover:bg-white/40
+                           flex items-center justify-center text-white backdrop-blur-sm transition focus:outline-none focus:ring-2 focus:ring-white"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+
+              <p className="text-white/80 text-sm font-bold tracking-widest">No. {padDex(data.dex)}</p>
+              <h2 className="text-white text-3xl font-black drop-shadow">{data.name}</h2>
+              <p className="text-white/85 text-sm font-medium">
+                {data.en}{hasDetail && data.category ? ` · ${data.category}` : ''}
+              </p>
+
+              <div className="mt-3 flex flex-wrap gap-2 min-h-[34px]">
+                {hasDetail ? (
+                  data.types.map((t) => (
+                    <TypeBadge key={t} type={t} size="lg" className="ring-2 ring-white/40" />
+                  ))
+                ) : !failed ? (
+                  <>
+                    <span className="h-[34px] w-16 rounded-full bg-white/30 animate-pulse" />
+                    <span className="h-[34px] w-16 rounded-full bg-white/20 animate-pulse" />
+                  </>
+                ) : null}
+              </div>
+            </div>
+
+            {/* 떠 있는 큰 이미지 */}
+            <div className="relative -mt-20 flex justify-center">
+              <div className="h-40 w-40 sm:h-48 sm:w-48 rounded-full bg-white shadow-xl flex items-center justify-center">
+                <PokeImage
+                  src={data.image}
+                  fallbackSrc={data.fallbackImage}
+                  alt={data.name}
+                  className="h-32 w-32 sm:h-40 sm:w-40 animate-float"
+                />
+              </div>
+            </div>
+
+            {/* 본문 */}
+            <div className="px-6 pt-4 pb-7">
+              {hasDetail ? (
+                <>
+                  <p className="text-slate-600 leading-relaxed text-[15px] text-center mb-5">
+                    {data.description || '설명 정보가 없습니다.'}
+                  </p>
+
+                  <div className="flex gap-3 mb-3">
+                    {stat('분류', data.category || '-')}
+                  </div>
+                  <div className="flex gap-3">
+                    {stat('키', `${data.height.toFixed(1)}m`)}
+                    {stat('몸무게', `${data.weight.toFixed(1)}kg`)}
+                  </div>
+                </>
+              ) : failed ? (
+                // 상세 로드 실패: graceful degrade (영문 이름/이미지는 이미 표시됨)
+                <div className="text-center py-6">
+                  <p className="text-slate-500 font-bold">상세 정보를 불러오지 못했어요.</p>
+                  <p className="text-slate-400 text-sm mt-1">네트워크를 확인한 뒤 다시 열어 주세요.</p>
+                </div>
+              ) : (
+                // 상세 로딩 중
+                <div className="flex flex-col items-center justify-center py-8">
+                  <PokeballSpinner className="h-10 w-10" />
+                  <p className="mt-3 text-slate-400 text-sm font-medium" aria-live="polite">
+                    상세 정보 불러오는 중...
+                  </p>
+                </div>
+              )}
+
+              {/* 하단 닫기 버튼 (접근성/모바일) */}
+              <button
+                type="button"
+                onClick={onClose}
+                className="mt-6 w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-900 text-white font-bold
+                           transition focus:outline-none focus:ring-4 focus:ring-slate-300"
+              >
+                도감으로 돌아가기
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🎨 Design System: PokeballSpinner (회전 포켓볼)
+    // ========================================
+    function PokeballSpinner({ className = '' }) {
+      return (
+        <div
+          className={`relative rounded-full animate-spin ${className}`}
+          style={{ background: 'linear-gradient(#ee1515 0 50%, #ffffff 50% 100%)' }}
+          aria-hidden="true"
+        >
+          {/* 가운데 가로 띠 */}
+          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[14%] bg-slate-900" />
+          {/* 가운데 버튼 */}
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[34%] w-[34%] rounded-full bg-white border-[5px] border-slate-900" />
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🧩 LoadingScreen (초기 데이터 로딩)
+    // ========================================
+    function LoadingScreen({ count = 10 }) {
+      return (
+        <div>
+          {/* 회전 포켓볼 + 메시지 */}
+          <div className="flex flex-col items-center justify-center py-10">
+            <PokeballSpinner className="h-16 w-16 sm:h-20 sm:w-20 shadow-lg" />
+            <p className="mt-5 text-slate-500 font-bold text-base sm:text-lg" aria-live="polite">
+              도감 불러오는 중...
+            </p>
+            <p className="text-slate-400 text-sm mt-1">PokéAPI 에서 전국도감 목록을 받아오고 있어요</p>
+          </div>
+
+          {/* 스켈레톤 카드들 */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-5 mt-4">
+            {Array.from({ length: count }).map((_, i) => (
+              <div
+                key={i}
+                className="rounded-3xl p-4 border border-white/70 bg-white shadow-md animate-pulse"
+              >
+                <div className="aspect-square mb-3 rounded-full bg-slate-200" />
+                <div className="h-3 w-12 bg-slate-200 rounded mb-2" />
+                <div className="h-5 w-3/4 bg-slate-200 rounded mb-2" />
+                <div className="h-3 w-1/2 bg-slate-200 rounded mb-3" />
+                <div className="h-5 w-16 bg-slate-200 rounded-full" />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🧩 ErrorScreen (로딩 실패 + 다시 시도)
+    // ========================================
+    function ErrorScreen({ message, onRetry }) {
+      return (
+        <div className="text-center py-20" role="alert">
+          <div className="text-6xl mb-4">📡</div>
+          <p className="text-slate-700 font-bold text-lg">데이터를 불러오지 못했어요.</p>
+          <p className="text-slate-400 text-sm mt-1">네트워크를 확인해 주세요.</p>
+          {message && (
+            <p className="text-slate-300 text-xs mt-2 break-all max-w-md mx-auto">{message}</p>
+          )}
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-6 inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-red-500 hover:bg-red-600
+                       text-white font-bold transition focus:outline-none focus:ring-4 focus:ring-red-200"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            다시 시도
+          </button>
+        </div>
+      );
+    }
+
+    // ========================================
+    // 🚀 App
+    // ========================================
+    function App() {
+      const [query, setQuery] = useState('');
+      const [selectedId, setSelectedId] = useState(null); // 모달 대상 id
+
+      // 인덱스(전국도감 전체) 로딩 상태 — 초기 1회 요청만 전역 로딩/에러 대상
+      const [index, setIndex] = useState([]); // [{ id, enName }]
+      const [status, setStatus] = useState('loading'); // 'loading' | 'success' | 'error'
+      const [errorMsg, setErrorMsg] = useState('');
+      const [reloadKey, setReloadKey] = useState(0); // '다시 시도' 트리거
+
+      // 무한 스크롤: 현재 렌더 중인 카드 수 (검색 중에도 동일 메커니즘으로 점증)
+      const [visibleCount, setVisibleCount] = useState(BATCH_SIZE);
+
+      // 한글 이름 검색(베스트에포트): 카드가 상세를 로드하면 여기에 id->한글이름 적재.
+      // ref 에 누적하고, "검색 중일 때만" 버전 카운터를 올려 재필터 (전체 그리드 불필요 리렌더 방지).
+      const knownKo = useRef(new Map());
+      const [koVersion, setKoVersion] = useState(0);
+      const queryRef = useRef(''); // handleDetail 안정화를 위해 현재 검색어를 ref 로 추적
+
+      // id -> 인덱스 항목 빠른 조회 (stub 생성용)
+      const indexById = useMemo(() => {
+        const m = new Map();
+        index.forEach((e) => m.set(e.id, e));
+        return m;
+      }, [index]);
+
+      // 마운트 시 + 다시 시도 시 인덱스 1회 로드
+      useEffect(() => {
+        let cancelled = false;
+        setStatus('loading');
+        setErrorMsg('');
+
+        loadIndex()
+          .then((list) => {
+            if (cancelled) return;
+            setIndex(list);
+            setStatus('success');
+          })
+          .catch((err) => {
+            if (cancelled) return;
+            setErrorMsg(err && err.message ? err.message : String(err));
+            setStatus('error');
+          });
+
+        return () => {
+          cancelled = true;
+        };
+      }, [reloadKey]);
+
+      const handleRetry = useCallback(() => setReloadKey((k) => k + 1), []);
+
+      const isSearching = query.trim().length > 0;
+      queryRef.current = query; // 매 렌더마다 최신 검색어 반영
+
+      // 카드가 상세를 로드했을 때 호출 — 한글 이름 캐시에 적재.
+      // 검색 중일 때만 리렌더(koVersion++) 하여 한글 이름으로도 즉시 필터되게 한다.
+      // queryRef 로 현재 검색어를 읽어 콜백을 안정적(deps [])으로 유지 → 키 입력마다 전체 카드 effect 재실행 방지.
+      const handleDetail = useCallback((detail) => {
+        const prev = knownKo.current.get(detail.id);
+        if (prev !== detail.name) {
+          knownKo.current.set(detail.id, detail.name);
+          if (queryRef.current.trim()) setKoVersion((v) => v + 1);
+        }
+      }, []);
+
+      // 검색: 전체 1025 마스터 인덱스를 메모리에서 즉시 필터
+      //  - 도감번호(숫자) 또는 영문 이름(부분일치)
+      //  - 이미 로드된 항목은 한글 이름도 매칭(베스트에포트)
+      const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        if (!q) return index;
+        const num = q.replace(/^#|no\.?\s*/i, ''); // "#025", "no. 25" → "25"/"025"
+        const ko = knownKo.current;
+        return index.filter((e) => {
+          if (e.enName.toLowerCase().includes(q)) return true;
+          if (num && (String(e.id).includes(num) || padDex(e.id).includes(num))) return true;
+          const koName = ko.get(e.id);
+          if (koName && koName.toLowerCase().includes(q)) return true;
+          return false;
+        });
+        // koVersion 을 의존성에 포함해 한글 이름 캐시 갱신 시 재필터
+      }, [query, index, koVersion]);
+
+      // 검색어가 바뀌면 보이는 개수를 처음부터 (검색 결과를 위에서부터 점증)
+      useEffect(() => {
+        setVisibleCount(BATCH_SIZE);
+      }, [query]);
+
+      // 실제로 렌더할 슬라이스
+      const visible = useMemo(
+        () => filtered.slice(0, visibleCount),
+        [filtered, visibleCount]
+      );
+      const hasMore = visibleCount < filtered.length;
+
+      // 무한 스크롤 센티넬 옵저버: 바닥 근처에 오면 다음 배치 추가.
+      // visibleCount 를 deps 에 포함해 매 배치 후 옵저버를 재생성 → 센티넬이 계속 보이는
+      // 상태(큰 화면/적은 결과)에서도 다음 배치가 자동으로 이어서 로드된다.
+      const sentinelRef = useRef(null);
+      useEffect(() => {
+        const el = sentinelRef.current;
+        if (!el || !hasMore) return;
+        if (typeof IntersectionObserver === 'undefined') {
+          // 미지원 환경 폴백: 한 번에 전부 표시
+          setVisibleCount(filtered.length);
+          return;
+        }
+        const io = new IntersectionObserver(
+          (entries) => {
+            if (entries.some((e) => e.isIntersecting)) {
+              setVisibleCount((c) => Math.min(c + BATCH_SIZE, filtered.length));
+            }
+          },
+          { rootMargin: '600px' } // 미리 당겨 매끄럽게
+        );
+        io.observe(el);
+        return () => io.disconnect();
+      }, [hasMore, filtered.length, visibleCount]);
+
+      const handleSelect = useCallback((id) => setSelectedId(id), []);
+      const handleClose = useCallback(() => setSelectedId(null), []);
+
+      const isLoading = status === 'loading';
+      const isError = status === 'error';
+
+      // 모달에 넘길 stub (인덱스 기반) — 상세는 모달이 캐시/fetch 로 해결
+      const selectedStub =
+        selectedId != null && indexById.has(selectedId)
+          ? stubFromIndex(indexById.get(selectedId))
+          : null;
+
+      return (
+        <div className="min-h-screen pb-16">
+          <PokedexHeader />
+
+          {/* 검색 영역 (로딩/에러 중에는 숨김) */}
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 pb-2">
+            {!isLoading && !isError && (
+              <>
+                <SearchBar value={query} onChange={setQuery} />
+                <p className="text-center text-slate-400 text-sm mt-3 font-medium">
+                  {isSearching ? (
+                    <>
+                      검색 결과 <span className="font-bold text-red-500">{filtered.length}</span>마리
+                    </>
+                  ) : (
+                    <>
+                      총 <span className="font-bold text-red-500">{filtered.length}</span>마리 ·{' '}
+                      <span className="font-bold text-slate-500">{visible.length}</span>마리 표시 중
+                    </>
+                  )}
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* 본문: 로딩 / 에러 / 그리드 / 빈 상태 */}
+          <main className="max-w-6xl mx-auto px-4 sm:px-6 pt-2">
+            {isLoading ? (
+              <LoadingScreen count={10} />
+            ) : isError ? (
+              <ErrorScreen message={errorMsg} onRetry={handleRetry} />
+            ) : filtered.length === 0 ? (
+              <div className="text-center py-20">
+                <div className="text-6xl mb-4">🔍</div>
+                <p className="text-slate-500 font-bold text-lg">검색 결과가 없어요</p>
+                <p className="text-slate-400 text-sm mt-1">"{query}" 와 일치하는 포켓몬이 없습니다.</p>
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  className="mt-5 px-5 py-2.5 rounded-2xl bg-red-500 hover:bg-red-600 text-white font-bold transition"
+                >
+                  전체 보기
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-5">
+                  {visible.map((e, i) => (
+                    <PokemonCard
+                      key={e.id}
+                      stub={stubFromIndex(e)}
+                      index={i}
+                      onSelect={handleSelect}
+                      onDetail={handleDetail}
+                    />
+                  ))}
+                </div>
+
+                {/* 무한 스크롤 센티넬 + 더 불러오는 중 표시 */}
+                {hasMore && (
+                  <div
+                    ref={sentinelRef}
+                    className="flex flex-col items-center justify-center py-10"
+                    aria-hidden="true"
+                  >
+                    <PokeballSpinner className="h-10 w-10" />
+                    <p className="mt-3 text-slate-400 text-sm font-medium">더 불러오는 중...</p>
+                  </div>
+                )}
+                {!hasMore && (
+                  <p className="text-center text-slate-300 text-xs font-medium py-8">
+                    — 여기까지 {filtered.length}마리 —
+                  </p>
+                )}
+              </>
+            )}
+          </main>
+
+          {/* 푸터 */}
+          <footer className="text-center text-slate-400 text-xs mt-12">
+            <p>데이터 · 이미지 출처 · PokeAPI / The Pokémon Company</p>
+            <p className="mt-1">팬 제작 도감 데모 · React + Tailwind · 인터넷 연결 필요</p>
+          </footer>
+
+          {/* 상세 모달 */}
+          {selectedStub && (
+            <DetailModal id={selectedId} stub={selectedStub} onClose={handleClose} />
+          )}
+        </div>
+      );
+    }
+
+    // ========================================
+    // Rendering
+    // ========================================
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
