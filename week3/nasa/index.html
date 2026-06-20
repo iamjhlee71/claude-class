@@ -271,6 +271,111 @@
     }
 
     // ========================================
+    // 🌐 번역 (키 불필요) — Google(gtx) 우선 → MyMemory 폴백
+    //   둘 다 CORS '*' 허용이라 file:// 에서도 동작 (인터넷 필요).
+    // ========================================
+
+    // 문장 경계로 텍스트를 maxLen 이하 청크로 그리디 패킹.
+    // 단일 문장이 maxLen 보다 길면 강제로 잘라서라도 청크에 담는다.
+    function chunkText(text, maxLen) {
+      const src = (text || "").trim();
+      if (!src) return [];
+      if (src.length <= maxLen) return [src];
+
+      // ". " 로 끊되 마침표는 보존 (한 문장 = "... ." 형태)
+      const parts = src.split(/(?<=\.)\s+/);
+      const chunks = [];
+      let cur = "";
+
+      const pushCur = () => {
+        if (cur) {
+          chunks.push(cur);
+          cur = "";
+        }
+      };
+
+      for (let sentence of parts) {
+        // 한 문장이 maxLen 보다 길면 단어 단위(최후엔 글자 단위)로 강제 분할
+        while (sentence.length > maxLen) {
+          pushCur();
+          let cut = sentence.lastIndexOf(" ", maxLen);
+          if (cut <= 0) cut = maxLen; // 공백이 없으면 글자로 자름
+          chunks.push(sentence.slice(0, cut).trim());
+          sentence = sentence.slice(cut).trim();
+        }
+        if (!sentence) continue;
+        // 현재 청크에 문장을 추가하면 넘치는지 검사
+        if (cur && (cur.length + 1 + sentence.length) > maxLen) pushCur();
+        cur = cur ? cur + " " + sentence : sentence;
+      }
+      pushCur();
+      return chunks;
+    }
+
+    // Google 비공식 gtx 엔드포인트 (최고 품질, 관대한 CORS)
+    async function translateGoogle(text) {
+      const chunks = chunkText(text, 1500); // URL 길이 안전 한도
+      if (chunks.length === 0) return "";
+      const out = [];
+      for (const chunk of chunks) {
+        const url =
+          "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ko&dt=t&q=" +
+          encodeURIComponent(chunk);
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("google http " + res.status);
+        const json = await res.json();
+        // 응답은 중첩 배열: json[0] = 세그먼트 배열, seg[0] = 번역 텍스트
+        if (!json || !Array.isArray(json[0])) throw new Error("google shape");
+        const piece = json[0].map((s) => (s && s[0]) || "").join("");
+        if (!piece.trim()) throw new Error("google empty");
+        out.push(piece);
+      }
+      return out.join(" ").trim();
+    }
+
+    // MyMemory 폴백 (요청당 길이 제한이 더 짧음 → 더 작게 청크)
+    async function translateMyMemory(text) {
+      const chunks = chunkText(text, 450); // MyMemory 요청당 한도
+      if (chunks.length === 0) return "";
+      const out = [];
+      for (const chunk of chunks) {
+        const url =
+          "https://api.mymemory.translated.net/get?q=" +
+          encodeURIComponent(chunk) +
+          "&langpair=en|ko";
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("mymemory http " + res.status);
+        const json = await res.json();
+        // responseStatus 가 200 이 아니면 실패로 간주
+        const status = json && json.responseStatus;
+        if (String(status) !== "200") throw new Error("mymemory status " + status);
+        const piece =
+          json && json.responseData && json.responseData.translatedText;
+        if (!piece || !String(piece).trim()) throw new Error("mymemory empty");
+        out.push(String(piece));
+      }
+      return out.join(" ").trim();
+    }
+
+    // 공개 헬퍼: Google 먼저, 실패하면 MyMemory. 둘 다 실패하면 throw.
+    async function translateToKorean(text) {
+      try {
+        const ko = await translateGoogle(text);
+        if (ko && ko.trim()) return ko;
+        throw new Error("google blank");
+      } catch (gErr) {
+        // Google 실패 → MyMemory 폴백 (여기서도 실패하면 그대로 throw)
+        const ko = await translateMyMemory(text);
+        if (ko && ko.trim()) return ko;
+        throw new Error("both providers failed");
+      }
+    }
+
+    // APOD date → 번역문 캐시 (컴포넌트 리마운트와 무관하게 유지).
+    // 같은 날짜는 네트워크 재요청 없이 즉시 토글된다.
+    const translationCache = new Map();
+
+    // ========================================
     // 🎨 디자인 시스템 컴포넌트
     // ========================================
     function NavButton({ children, onClick, disabled, title, active }) {
@@ -538,6 +643,55 @@
           ? data.url
           : data.thumbnail_url || null;
 
+      // ----- 한글 번역 토글 상태 -----
+      // showKo: 한글 번역문을 보여주는 중인지 / koText: 캐시된 번역문 / loading / error
+      const [showKo, setShowKo] = useState(false);
+      const [koText, setKoText] = useState(() => translationCache.get(data.date) || null);
+      const [translating, setTranslating] = useState(false);
+      const [transErr, setTransErr] = useState(false);
+
+      // 호(날짜) 변경 시: 항상 영어 원문으로 리셋. 캐시는 유지하되 기본 표시는 원문.
+      useEffect(() => {
+        setShowKo(false);
+        setTranslating(false);
+        setTransErr(false);
+        setKoText(translationCache.get(data.date) || null);
+      }, [data.date]);
+
+      const handleToggleTranslate = useCallback(async () => {
+        // 이미 한글 보는 중 → 원문으로 즉시 전환
+        if (showKo) {
+          setShowKo(false);
+          return;
+        }
+        setTransErr(false);
+
+        // 캐시에 있으면 네트워크 없이 즉시 표시
+        const cached = translationCache.get(data.date);
+        if (cached) {
+          setKoText(cached);
+          setShowKo(true);
+          return;
+        }
+
+        // 최초 번역 → 네트워크 (Google → MyMemory 폴백)
+        setTranslating(true);
+        try {
+          const ko = await translateToKorean(data.explanation || "");
+          translationCache.set(data.date, ko);
+          setKoText(ko);
+          setShowKo(true);
+        } catch (e) {
+          // 둘 다 실패: 원문 유지, 버튼 원복, 인라인 에러 표시
+          setTransErr(true);
+          setShowKo(false);
+        } finally {
+          setTranslating(false);
+        }
+      }, [showKo, data.date, data.explanation]);
+
+      const articleText = showKo && koText ? koText : data.explanation;
+
       return (
         <article className="px-5 sm:px-8 pb-20">
           <div className="max-w-6xl mx-auto">
@@ -601,18 +755,78 @@
             <div className="mt-12 grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-10 lg:gap-14">
               {/* 기사 본문 */}
               <div className="anim-fade-up d2">
-                <div className="smallcaps text-[11px] text-gold/80 mb-4 flex items-center gap-3">
-                  <span className="h-px w-8 bg-gold/50" />
-                  Feature · 천문학 해설
+                <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
+                  <div className="smallcaps text-[11px] text-gold/80 flex items-center gap-3">
+                    <span className="h-px w-8 bg-gold/50" />
+                    Feature · 천문학 해설
+                    {/* 기계 번역 배지 — 번역문 표시 중에만 노출 */}
+                    {showKo && koText && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-gold/40 bg-gold/10 px-2.5 py-0.5 text-[9px] tracking-[0.18em] text-goldSoft normal-case">
+                        ⚙ 자동 번역
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 번역 토글 버튼 */}
+                  <button
+                    type="button"
+                    onClick={handleToggleTranslate}
+                    disabled={translating}
+                    aria-busy={translating}
+                    title={showKo ? "영어 원문 보기" : "한글로 자동 번역"}
+                    className={[
+                      "inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm tracking-wide transition-all duration-200 select-none border backdrop-blur-sm whitespace-nowrap",
+                      translating
+                        ? "border-gold/30 text-goldSoft/70 bg-white/[0.03] cursor-wait"
+                        : "border-gold/30 text-goldSoft hover:border-gold/70 hover:text-ivory bg-white/[0.03] hover:bg-white/[0.07]",
+                    ].join(" ")}
+                  >
+                    {translating ? (
+                      <>
+                        <span
+                          className="inline-block w-3.5 h-3.5 rounded-full border-2 border-goldSoft/40 border-t-goldSoft animate-spin"
+                          aria-hidden="true"
+                        />
+                        번역 중...
+                      </>
+                    ) : showKo ? (
+                      <>🇬🇧 원문 보기</>
+                    ) : (
+                      <>🇰🇷 한글로 번역</>
+                    )}
+                  </button>
                 </div>
 
-                {/* 영어 원문 안내 (NASA 정식 해설) */}
+                {/* 안내 문구 — 모드에 따라 전환 */}
                 <p className="font-kr text-xs text-ivory/45 mb-5 leading-relaxed">
-                  아래 해설은 NASA가 작성한 원문(영어)입니다. 기계 번역 없이 천문학자의 원래 설명을 그대로 싣습니다.
+                  {showKo && koText
+                    ? "아래는 NASA 원문(영어)을 자동 번역한 내용입니다. 정확한 의미는 원문을 함께 참고해 주세요."
+                    : "아래 해설은 NASA가 작성한 원문(영어)입니다. ‘한글로 번역’을 누르면 자동 번역을 볼 수 있어요."}
                 </p>
 
+                {/* 번역 실패 인라인 메시지 (해제 가능) */}
+                {transErr && (
+                  <div
+                    role="alert"
+                    className="mb-5 flex items-start justify-between gap-3 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3"
+                  >
+                    <span className="font-kr text-sm text-rose-200/90 leading-relaxed">
+                      번역에 실패했어요. 잠시 후 다시 시도해 주세요.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTransErr(false)}
+                      aria-label="닫기"
+                      className="text-rose-200/60 hover:text-rose-100 text-lg leading-none -mt-0.5"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+
+                {/* 본문 — 원문/번역문 모두 동일한 잡지 스타일(세리프·드롭캡·2단) */}
                 <div className="feature-columns font-serif text-[17px] leading-[1.85] text-ivory/90">
-                  <p className="dropcap">{data.explanation}</p>
+                  <p className="dropcap">{articleText}</p>
                 </div>
 
                 {/* 이미지일 때 HD 보기 버튼 (본문 하단에도) */}
